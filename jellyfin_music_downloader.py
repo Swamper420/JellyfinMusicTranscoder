@@ -200,6 +200,156 @@ def validate_output_format(output_format: str) -> str:
     return lowered
 
 
+def prompt_text(
+    label: str,
+    default: str | None = None,
+    *,
+    required: bool = False,
+    secret: bool = False,
+    input_func: Any = None,
+) -> str | None:
+    if input_func is None:
+        input_func = input
+    while True:
+        prompt = f"{label}"
+        if default:
+            prompt += f" [{default}]"
+        prompt += ": "
+        value = input_func(prompt) if not secret else _read_secret(prompt)
+        value = value.strip()
+        if value:
+            return value
+        if default is not None:
+            return default
+        if not required:
+            return None
+        print(f"{label} is required.", file=sys.stderr)
+
+
+def prompt_int(
+    label: str,
+    default: int | None = None,
+    *,
+    minimum: int | None = None,
+    input_func: Any = None,
+) -> int | None:
+    if input_func is None:
+        input_func = input
+    while True:
+        raw_value = prompt_text(label, str(default) if default is not None else None, input_func=input_func)
+        if raw_value is None:
+            return None
+        try:
+            parsed = int(raw_value)
+        except ValueError:
+            print(f"{label} must be a whole number.", file=sys.stderr)
+            continue
+        if minimum is not None and parsed < minimum:
+            print(f"{label} must be at least {minimum}.", file=sys.stderr)
+            continue
+        return parsed
+
+
+def prompt_bool(label: str, default: bool = False, *, input_func: Any = None) -> bool:
+    if input_func is None:
+        input_func = input
+    default_label = "Y/n" if default else "y/N"
+    while True:
+        value = input_func(f"{label} [{default_label}]: ").strip().lower()
+        if not value:
+            return default
+        if value in {"y", "yes"}:
+            return True
+        if value in {"n", "no"}:
+            return False
+        print("Please answer y or n.", file=sys.stderr)
+
+
+def _read_secret(prompt: str) -> str:
+    try:
+        import getpass
+    except ImportError:
+        return input(prompt)
+    return getpass.getpass(prompt)
+
+
+def supports_interactive_ui() -> bool:
+    return sys.stdin.isatty() and sys.stdout.isatty()
+
+
+def should_use_interactive_ui(argv: list[str] | None) -> bool:
+    if argv is None:
+        return len(sys.argv) == 1 and supports_interactive_ui()
+    return len(argv) == 0 and supports_interactive_ui()
+
+
+def prompt_for_missing_args(args: argparse.Namespace, *, input_func: Any = None) -> argparse.Namespace:
+    if input_func is None:
+        input_func = input
+    print("Jellyfin Music Downloader Setup")
+    print("--------------------------------")
+    args.server_url = args.server_url or prompt_text(
+        "Server URL",
+        "https://jellyfin.example.com",
+        required=True,
+        input_func=input_func,
+    )
+    args.api_token = args.api_token or prompt_text(
+        "API token",
+        required=True,
+        secret=True,
+        input_func=input_func,
+    )
+    output_dir = str(args.output_dir) if args.output_dir else "./music"
+    args.output_dir = Path(
+        prompt_text("Output directory", output_dir, required=True, input_func=input_func) or output_dir
+    )
+    args.user_id = args.user_id or prompt_text("User ID (leave blank for /Users/Me)", input_func=input_func)
+    args.format = validate_output_format(
+        prompt_text("Output format", args.format or "original", required=True, input_func=input_func) or "original"
+    )
+
+    if args.format == "original":
+        args.audio_codec = None
+        args.audio_bitrate = None
+        args.audio_sample_rate = None
+    else:
+        args.audio_codec = args.audio_codec or prompt_text("Audio codec (optional)", input_func=input_func)
+        if args.audio_bitrate is None:
+            args.audio_bitrate = prompt_int("Audio bitrate in bps (optional)", input_func=input_func)
+        if args.audio_sample_rate is None:
+            args.audio_sample_rate = prompt_int("Audio sample rate in Hz (optional)", input_func=input_func)
+
+    if args.parallel is None:
+        args.parallel = prompt_int("Parallel downloads", 4, minimum=1, input_func=input_func) or 4
+    if args.timeout is None:
+        args.timeout = prompt_int("HTTP timeout in seconds", 60, minimum=1, input_func=input_func) or 60
+    if not args.overwrite:
+        args.overwrite = prompt_bool("Overwrite existing files", False, input_func=input_func)
+    if not args.dry_run:
+        args.dry_run = prompt_bool("Dry run only", False, input_func=input_func)
+    return args
+
+
+def validate_args(parser: argparse.ArgumentParser, args: argparse.Namespace) -> argparse.Namespace:
+    missing = [
+        flag
+        for flag, value in (
+            ("--server-url", args.server_url),
+            ("--api-token", args.api_token),
+            ("--output-dir", args.output_dir),
+        )
+        if not value
+    ]
+    if missing:
+        parser.error(f"the following arguments are required: {', '.join(missing)}")
+    if args.parallel < 1:
+        parser.error("--parallel must be at least 1")
+    if args.timeout < 1:
+        parser.error("--timeout must be at least 1")
+    return args
+
+
 def download_items(
     client: JellyfinClient,
     items: Iterable[AudioItem],
@@ -289,13 +439,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
             "request server-side transcoding."
         )
     )
-    parser.add_argument("--server-url", required=True, help="Base Jellyfin URL, for example https://jellyfin.example.com")
-    parser.add_argument("--api-token", required=True, help="Jellyfin API token")
+    parser.add_argument("--server-url", help="Base Jellyfin URL, for example https://jellyfin.example.com")
+    parser.add_argument("--api-token", help="Jellyfin API token")
     parser.add_argument("--user-id", help="Jellyfin user ID. If omitted, /Users/Me is used.")
     parser.add_argument(
         "--output-dir",
         type=Path,
-        required=True,
         help="Directory to store downloaded files",
     )
     parser.add_argument(
@@ -310,17 +459,27 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--parallel",
         type=int,
-        default=4,
+        default=None,
         help="Number of simultaneous downloads",
     )
     parser.add_argument("--overwrite", action="store_true", help="Overwrite existing files instead of skipping them")
     parser.add_argument("--dry-run", action="store_true", help="Show the files that would be downloaded without writing them")
-    parser.add_argument("--timeout", type=int, default=60, help="HTTP timeout in seconds")
+    parser.add_argument("--timeout", type=int, default=None, help="HTTP timeout in seconds")
+    parser.add_argument(
+        "--interactive",
+        action="store_true",
+        help="Launch an interactive terminal setup wizard for any missing options.",
+    )
 
     args = parser.parse_args(argv)
-    if args.parallel < 1:
-        parser.error("--parallel must be at least 1")
-    return args
+    if args.interactive or should_use_interactive_ui(argv):
+        args = prompt_for_missing_args(args)
+    else:
+        if args.parallel is None:
+            args.parallel = 4
+        if args.timeout is None:
+            args.timeout = 60
+    return validate_args(parser, args)
 
 
 def main(argv: list[str] | None = None) -> int:

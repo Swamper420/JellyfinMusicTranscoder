@@ -10,6 +10,7 @@ from jellyfin_music_downloader import (
     build_output_path,
     download_items,
     download_one,
+    parse_args,
     validate_output_format,
 )
 
@@ -63,6 +64,69 @@ class JellyfinMusicDownloaderTests(unittest.TestCase):
     def test_validate_output_format_rejects_unsafe_input(self) -> None:
         with self.assertRaises(argparse.ArgumentTypeError):
             validate_output_format("../mp3")
+
+    def test_parse_args_interactive_collects_missing_required_fields(self) -> None:
+        responses = iter(
+            [
+                "https://example.com",
+                "/tmp/music",
+                "",
+                "original",
+                "8",
+                "45",
+                "y",
+                "n",
+            ]
+        )
+
+        def fake_input(prompt: str) -> str:
+            return next(responses)
+
+        with patch("jellyfin_music_downloader.input", side_effect=fake_input), patch(
+            "jellyfin_music_downloader._read_secret",
+            return_value="secret-token",
+        ):
+            args = parse_args(["--interactive"])
+
+        self.assertEqual(args.server_url, "https://example.com")
+        self.assertEqual(args.api_token, "secret-token")
+        self.assertEqual(args.output_dir, Path("/tmp/music"))
+        self.assertIsNone(args.user_id)
+        self.assertEqual(args.format, "original")
+        self.assertEqual(args.parallel, 8)
+        self.assertEqual(args.timeout, 45)
+        self.assertTrue(args.overwrite)
+        self.assertFalse(args.dry_run)
+
+    def test_parse_args_uses_interactive_ui_when_no_arguments_are_supplied_in_a_tty(self) -> None:
+        responses = iter(
+            [
+                "https://example.com",
+                "/tmp/music",
+                "",
+                "original",
+                "",
+                "",
+                "",
+                "",
+            ]
+        )
+
+        def fake_input(prompt: str) -> str:
+            return next(responses)
+
+        with patch("jellyfin_music_downloader.input", side_effect=fake_input), patch(
+            "jellyfin_music_downloader._read_secret",
+            return_value="secret-token",
+        ), patch("jellyfin_music_downloader.sys.stdin.isatty", return_value=True), patch(
+            "jellyfin_music_downloader.sys.stdout.isatty",
+            return_value=True,
+        ):
+            args = parse_args([])
+
+        self.assertEqual(args.parallel, 4)
+        self.assertEqual(args.timeout, 60)
+        self.assertEqual(args.output_dir, Path("/tmp/music"))
 
     def test_download_one_skips_existing_files_without_overwrite(self) -> None:
         item = AudioItem("55", "Song", "Album", "Artist", 1, None, "/track.mp3")
