@@ -1,4 +1,5 @@
 import argparse
+import io
 import tempfile
 import unittest
 from pathlib import Path
@@ -35,15 +36,15 @@ class JellyfinMusicDownloaderTests(unittest.TestCase):
         )
 
     def test_build_download_url_uses_original_download_endpoint(self) -> None:
-        client = JellyfinClient("https://example.com", "secret-token", user_id="user-1")
+        client = JellyfinClient("https://example.com", "username", "password", user_id="user-1")
         item = AudioItem("55", "Song", "Album", "Artist", 1, None, "/track.m4a")
 
         url = client.build_download_url(item, output_format="original")
 
-        self.assertEqual(url, "https://example.com/Items/55/Download?api_key=secret-token")
+        self.assertEqual(url, "https://example.com/Items/55/Download")
 
     def test_build_download_url_uses_transcoding_endpoint_for_requested_format(self) -> None:
-        client = JellyfinClient("https://example.com", "secret-token", user_id="user-1")
+        client = JellyfinClient("https://example.com", "username", "password", user_id="user-1")
         item = AudioItem("55", "Song", "Album", "Artist", 1, None, "/track.m4a")
 
         url = client.build_download_url(
@@ -65,13 +66,32 @@ class JellyfinMusicDownloaderTests(unittest.TestCase):
         with self.assertRaises(argparse.ArgumentTypeError):
             validate_output_format("../mp3")
 
+    def test_access_token_authenticates_with_username_and_password(self) -> None:
+        client = JellyfinClient("https://example.com", "demo-user", "demo-pass")
+
+        with patch("jellyfin_music_downloader.urllib.request.urlopen") as mock_urlopen:
+            mock_urlopen.return_value.__enter__.return_value = io.StringIO(
+                '{"AccessToken":"secret-token","User":{"Id":"user-1"}}'
+            )
+
+            access_token = client.access_token
+
+        request = mock_urlopen.call_args.args[0]
+        self.assertEqual(request.full_url, "https://example.com/Users/AuthenticateByName")
+        self.assertEqual(request.get_method(), "POST")
+        self.assertEqual(request.headers["Content-type"], "application/json")
+        self.assertEqual(request.data, b'{"Username": "demo-user", "Pw": "demo-pass"}')
+        self.assertEqual(access_token, "secret-token")
+        self.assertEqual(client.user_id, "user-1")
+
     def test_parse_args_interactive_collects_missing_required_fields(self) -> None:
         responses = iter(
             [
                 "https://example.com",
+                "demo-user",
                 "/tmp/music",
                 "",
-                "original",
+                "1",
                 "8",
                 "45",
                 "y",
@@ -89,7 +109,8 @@ class JellyfinMusicDownloaderTests(unittest.TestCase):
             args = parse_args(["--interactive"])
 
         self.assertEqual(args.server_url, "https://example.com")
-        self.assertEqual(args.api_token, "secret-token")
+        self.assertEqual(args.username, "demo-user")
+        self.assertEqual(args.password, "secret-token")
         self.assertEqual(args.output_dir, Path("/tmp/music"))
         self.assertIsNone(args.user_id)
         self.assertEqual(args.format, "original")
@@ -102,9 +123,10 @@ class JellyfinMusicDownloaderTests(unittest.TestCase):
         responses = iter(
             [
                 "https://example.com",
+                "demo-user",
                 "/tmp/music",
                 "",
-                "original",
+                "",
                 "",
                 "",
                 "",
@@ -127,10 +149,12 @@ class JellyfinMusicDownloaderTests(unittest.TestCase):
         self.assertEqual(args.parallel, 4)
         self.assertEqual(args.timeout, 60)
         self.assertEqual(args.output_dir, Path("/tmp/music"))
+        self.assertEqual(args.username, "demo-user")
+        self.assertEqual(args.password, "secret-token")
 
     def test_download_one_skips_existing_files_without_overwrite(self) -> None:
         item = AudioItem("55", "Song", "Album", "Artist", 1, None, "/track.mp3")
-        client = JellyfinClient("https://example.com", "secret-token", user_id="user-1")
+        client = JellyfinClient("https://example.com", "username", "password", user_id="user-1")
 
         with tempfile.TemporaryDirectory() as temp_dir:
             destination = build_output_path(Path(temp_dir), item, "original")
@@ -155,7 +179,7 @@ class JellyfinMusicDownloaderTests(unittest.TestCase):
 
     def test_download_items_reports_failures_without_aborting_all_work(self) -> None:
         item = AudioItem("55", "Song", "Album", "Artist", 1, None, "/track.mp3")
-        client = JellyfinClient("https://example.com", "secret-token", user_id="user-1")
+        client = JellyfinClient("https://example.com", "username", "password", user_id="user-1")
 
         with tempfile.TemporaryDirectory() as temp_dir, patch(
             "jellyfin_music_downloader.urllib.request.urlopen",

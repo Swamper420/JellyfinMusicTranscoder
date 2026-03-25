@@ -25,7 +25,8 @@ Run directly with flags:
 ```bash
 python jellyfin_music_downloader.py \
   --server-url https://jellyfin.example.com \
-  --api-token YOUR_TOKEN \
+  --username YOUR_USERNAME \
+  --password YOUR_PASSWORD \
   --output-dir ./music \
   --parallel 6
 ```
@@ -35,7 +36,8 @@ Download using Jellyfin transcoding:
 ```bash
 python jellyfin_music_downloader.py \
   --server-url https://jellyfin.example.com \
-  --api-token YOUR_TOKEN \
+  --username YOUR_USERNAME \
+  --password YOUR_PASSWORD \
   --output-dir ./music-opus \
   --format opus \
   --audio-codec libopus \
