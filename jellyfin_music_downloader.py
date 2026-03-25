@@ -67,18 +67,52 @@ def _sanitize_path_component(value: str) -> str:
 
 
 class JellyfinClient:
-    def __init__(self, server_url: str, api_token: str, user_id: str | None = None, timeout: int = 60) -> None:
+    def __init__(self, server_url: str, username: str, password: str, user_id: str | None = None, timeout: int = 60) -> None:
         self.server_url = server_url.rstrip("/")
-        self.api_token = api_token
+        self.username = username
+        self.password = password
         self._user_id = user_id
+        self._access_token: str | None = None
         self.timeout = timeout
+
+    @property
+    def access_token(self) -> str:
+        if not self._access_token:
+            self._authenticate()
+        if not self._access_token:
+            raise RuntimeError("Jellyfin authentication did not return an access token.")
+        return self._access_token
 
     @property
     def user_id(self) -> str:
         if not self._user_id:
-            response = self._request_json("/Users/Me")
-            self._user_id = str(response["Id"])
+            self._authenticate()
         return self._user_id
+
+    def _authenticate(self) -> None:
+        if self._access_token:
+            return
+
+        request = urllib.request.Request(
+            self._build_url("/Users/AuthenticateByName"),
+            data=json.dumps({"Username": self.username, "Pw": self.password}).encode("utf-8"),
+            headers={
+                "Accept": "application/json",
+                "Content-Type": "application/json",
+                "X-Emby-Authorization": (
+                    f'MediaBrowser Client="{CLIENT_NAME}", Device="{CLIENT_NAME}", '
+                    f'DeviceId="{DEVICE_ID}", Version="{CLIENT_VERSION}"'
+                ),
+            },
+            method="POST",
+        )
+
+        with urllib.request.urlopen(request, timeout=self.timeout) as response:
+            payload = json.load(response)
+
+        self._access_token = str(payload["AccessToken"])
+        if not self._user_id:
+            self._user_id = str(payload["User"]["Id"])
 
     def iter_audio_items(self) -> Iterable[AudioItem]:
         start_index = 0
@@ -117,14 +151,16 @@ class JellyfinClient:
     ) -> str:
         output_format = output_format.lower()
         if output_format == "original":
-            return self._build_url(f"/Items/{item.item_id}/Download", {"api_key": self.api_token})
+            params = {"api_key": self._access_token} if self._access_token else None
+            return self._build_url(f"/Items/{item.item_id}/Download", params)
 
-        # FIXED: Removed `"Static": "true"` which was causing the 400 Bad Request during transcoding
         params = {
             "UserId": self.user_id,
             "DeviceId": DEVICE_ID,
-            "api_key": self.api_token,
+            "TranscodingContainer": output_format,
         }
+        if self._access_token:
+            params["api_key"] = self._access_token
         if audio_codec:
             params["AudioCodec"] = audio_codec
         if audio_bitrate:
@@ -140,7 +176,7 @@ class JellyfinClient:
             url,
             headers={
                 "Accept": "application/json",
-                "X-Emby-Token": self.api_token,
+                "X-Emby-Token": self.access_token,
                 "X-Emby-Authorization": (
                     f'MediaBrowser Client="{CLIENT_NAME}", Device="{CLIENT_NAME}", '
                     f'DeviceId="{DEVICE_ID}", Version="{CLIENT_VERSION}"'
@@ -312,8 +348,13 @@ def prompt_for_missing_args(args: argparse.Namespace, *, input_func: Any = None)
         required=True,
         input_func=input_func,
     )
-    args.api_token = args.api_token or prompt_text(
-        "API token",
+    args.username = args.username or prompt_text(
+        "Username",
+        required=True,
+        input_func=input_func,
+    )
+    args.password = args.password or prompt_text(
+        "Password",
         required=True,
         secret=True,
         input_func=input_func,
@@ -384,7 +425,8 @@ def validate_args(parser: argparse.ArgumentParser, args: argparse.Namespace) -> 
         flag
         for flag, value in (
             ("--server-url", args.server_url),
-            ("--api-token", args.api_token),
+            ("--username", args.username),
+            ("--password", args.password),
             ("--output-dir", args.output_dir),
         )
         if not value
@@ -464,6 +506,7 @@ def download_one(
     if dry_run:
         return destination, "planned"
 
+    access_token = client.access_token
     url = client.build_download_url(
         item,
         output_format=output_format,
@@ -471,7 +514,7 @@ def download_one(
         audio_bitrate=audio_bitrate,
         audio_sample_rate=audio_sample_rate,
     )
-    request = urllib.request.Request(url, headers={"X-Emby-Token": client.api_token})
+    request = urllib.request.Request(url, headers={"X-Emby-Token": access_token})
 
     with urllib.request.urlopen(request, timeout=timeout) as response, destination.open("wb") as output_handle:
         shutil.copyfileobj(response, output_handle)
@@ -488,7 +531,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         )
     )
     parser.add_argument("--server-url", help="Base Jellyfin URL, for example https://jellyfin.example.com")
-    parser.add_argument("--api-token", help="Jellyfin API token")
+    parser.add_argument("--username", help="Jellyfin username")
+    parser.add_argument("--password", help="Jellyfin password")
     parser.add_argument("--user-id", help="Jellyfin user ID. If omitted, /Users/Me is used.")
     parser.add_argument(
         "--output-dir",
@@ -534,7 +578,8 @@ def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
     client = JellyfinClient(
         server_url=args.server_url,
-        api_token=args.api_token,
+        username=args.username,
+        password=args.password,
         user_id=args.user_id,
         timeout=args.timeout,
     )
