@@ -79,7 +79,9 @@ class JellyfinClient:
     def access_token(self) -> str:
         if not self._access_token:
             self._authenticate()
-        return self._access_token or ""
+        if not self._access_token:
+            raise RuntimeError("Jellyfin authentication did not return an access token.")
+        return self._access_token
 
     @property
     def user_id(self) -> str:
@@ -149,13 +151,16 @@ class JellyfinClient:
     ) -> str:
         output_format = output_format.lower()
         if output_format == "original":
-            return self._build_url(f"/Items/{item.item_id}/Download")
+            params = {"api_key": self._access_token} if self._access_token else None
+            return self._build_url(f"/Items/{item.item_id}/Download", params)
 
         params = {
             "UserId": self.user_id,
             "DeviceId": DEVICE_ID,
             "TranscodingContainer": output_format,
         }
+        if self._access_token:
+            params["api_key"] = self._access_token
         if audio_codec:
             params["AudioCodec"] = audio_codec
         if audio_bitrate:
@@ -501,6 +506,7 @@ def download_one(
     if dry_run:
         return destination, "planned"
 
+    access_token = client.access_token
     url = client.build_download_url(
         item,
         output_format=output_format,
@@ -508,7 +514,7 @@ def download_one(
         audio_bitrate=audio_bitrate,
         audio_sample_rate=audio_sample_rate,
     )
-    request = urllib.request.Request(url, headers={"X-Emby-Token": client.access_token})
+    request = urllib.request.Request(url, headers={"X-Emby-Token": access_token})
 
     with urllib.request.urlopen(request, timeout=timeout) as response, destination.open("wb") as output_handle:
         shutil.copyfileobj(response, output_handle)

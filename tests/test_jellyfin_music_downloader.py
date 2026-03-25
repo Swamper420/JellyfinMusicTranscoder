@@ -91,7 +91,7 @@ class JellyfinMusicDownloaderTests(unittest.TestCase):
                 "demo-user",
                 "/tmp/music",
                 "",
-                "1",
+                "",
                 "8",
                 "45",
                 "y",
