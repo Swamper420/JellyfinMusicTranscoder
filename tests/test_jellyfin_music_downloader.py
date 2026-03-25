@@ -1,3 +1,4 @@
+import argparse
 import tempfile
 import unittest
 from pathlib import Path
@@ -14,7 +15,7 @@ from jellyfin_music_downloader import (
 
 
 class JellyfinMusicDownloaderTests(unittest.TestCase):
-    def test_build_output_path_uses_album_artist_album_and_track_numbers(self) -> None:
+    def test_build_output_path_uses_artist_album_and_track_numbers(self) -> None:
         item = AudioItem(
             item_id="1",
             name='Track:Name',
@@ -60,7 +61,7 @@ class JellyfinMusicDownloaderTests(unittest.TestCase):
         self.assertIn("UserId=user-1", url)
 
     def test_validate_output_format_rejects_unsafe_input(self) -> None:
-        with self.assertRaises(Exception):
+        with self.assertRaises(argparse.ArgumentTypeError):
             validate_output_format("../mp3")
 
     def test_download_one_skips_existing_files_without_overwrite(self) -> None:

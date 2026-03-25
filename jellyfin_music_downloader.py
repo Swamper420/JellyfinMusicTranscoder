@@ -38,16 +38,13 @@ class AudioItem:
         source_path = payload.get("Path")
         if not source_path and media_sources:
             source_path = media_sources[0].get("Path")
+        album_artist = payload.get("AlbumArtist") or (album_artists[0] if album_artists else None)
 
         return cls(
             item_id=str(payload["Id"]),
             name=str(payload.get("Name") or payload["Id"]),
             album=str(payload.get("Album") or "Unknown Album"),
-            artist=str(
-                payload.get("AlbumArtist")
-                or (album_artists[0] if album_artists else None)
-                or "Unknown Artist"
-            ),
+            artist=str(album_artist or "Unknown Artist"),
             index_number=_maybe_int(payload.get("IndexNumber")),
             parent_index_number=_maybe_int(payload.get("ParentIndexNumber")),
             source_path=source_path,
@@ -60,11 +57,13 @@ def _maybe_int(value: Any) -> int | None:
     try:
         return int(value)
     except (TypeError, ValueError):
+        # Jellyfin metadata is occasionally incomplete or non-numeric; treat it the same as a missing track number.
         return None
 
 
 def _sanitize_path_component(value: str) -> str:
     sanitized = INVALID_PATH_CHARS.sub("_", value.strip())
+    # Windows disallows trailing periods and spaces in path components.
     sanitized = sanitized.rstrip(". ")
     return sanitized or "Unknown"
 
@@ -147,12 +146,8 @@ class JellyfinClient:
                 "Accept": "application/json",
                 "X-Emby-Token": self.api_token,
                 "X-Emby-Authorization": (
-                    'MediaBrowser Client="{client}", Device="{device}", DeviceId="{device_id}", Version="{version}"'
-                ).format(
-                    client=CLIENT_NAME,
-                    device=CLIENT_NAME,
-                    device_id=DEVICE_ID,
-                    version=CLIENT_VERSION,
+                    f'MediaBrowser Client="{CLIENT_NAME}", Device="{CLIENT_NAME}", '
+                    f'DeviceId="{DEVICE_ID}", Version="{CLIENT_VERSION}"'
                 ),
             },
         )
