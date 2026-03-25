@@ -10,7 +10,7 @@ import urllib.parse
 import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any, Callable, Iterable, TextIO
 
 
 DEVICE_ID = "jellyfin-music-downloader"
@@ -19,6 +19,7 @@ CLIENT_VERSION = "2.0"
 
 SAFE_FORMAT = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 INVALID_PATH_CHARS = re.compile(r'[<>:"/\\|?*\x00-\x1F]')
+PROGRESS_BAR_WIDTH = 30
 
 
 @dataclass(frozen=True)
@@ -230,6 +231,48 @@ def validate_output_format(output_format: str) -> str:
             "Output format must be 'original' or a safe container name such as mp3, flac, opus, or m4a."
         )
     return lowered
+
+
+def format_progress_bar(completed: int, total: int, width: int = PROGRESS_BAR_WIDTH) -> str:
+    if total <= 0:
+        return f"[{'-' * width}] {completed}/{total}"
+    ratio = min(max(completed / total, 0), 1)
+    filled = int(width * ratio)
+    bar = "=" * filled + "-" * (width - filled)
+    return f"[{bar}] {completed}/{total}"
+
+
+def render_progress(
+    completed: int,
+    total: int,
+    *,
+    stream: TextIO | None = None,
+    prefix: str = "Progress",
+    done: bool = False,
+) -> None:
+    if stream is None:
+        stream = sys.stderr
+    message = f"{prefix} {format_progress_bar(completed, total)}"
+    is_tty = getattr(stream, "isatty", lambda: False)()
+    if is_tty:
+        ending = "\n" if done else ""
+        print(f"\r{message}", end=ending, file=stream, flush=True)
+        return
+    print(message, file=stream, flush=True)
+
+
+def build_progress_callback(prefix: str) -> Callable[[int, int, AudioItem, Path, str], None]:
+    def on_progress(completed: int, total: int, item: AudioItem, destination: Path, status: str) -> None:
+        del item, destination, status
+        render_progress(
+            completed,
+            total,
+            stream=sys.stderr,
+            prefix=prefix,
+            done=completed == total,
+        )
+
+    return on_progress
 
 
 def prompt_text(
@@ -452,6 +495,7 @@ def download_items(
     overwrite: bool,
     dry_run: bool,
     timeout: int,
+    progress_callback: Callable[[int, int, AudioItem, Path, str], None] | None = None,
 ) -> list[tuple[AudioItem, Path, str]]:
     results: list[tuple[AudioItem, Path, str]] = []
 
@@ -473,6 +517,8 @@ def download_items(
             for item in items
         }
 
+        total_items = len(future_to_item)
+        completed = 0
         for future in concurrent.futures.as_completed(future_to_item):
             item = future_to_item[future]
             destination = build_output_path(output_dir, item, output_format)
@@ -480,6 +526,9 @@ def download_items(
                 resolved_destination, status = future.result()
             except Exception as error:
                 resolved_destination, status = destination, str(error)
+            completed += 1
+            if progress_callback is not None:
+                progress_callback(completed, total_items, item, resolved_destination, status)
             results.append((item, resolved_destination, status))
 
     return results
@@ -592,8 +641,9 @@ def main(argv: list[str] | None = None) -> int:
     print(
         f"Found {len(items)} audio items. Starting downloads with parallelism={args.parallel}, format={args.format}."
     )
+    progress_prefix = "Planning" if args.dry_run else "Downloading"
     failures = 0
-    for item, destination, status in download_items(
+    results = download_items(
         client=client,
         items=items,
         output_dir=args.output_dir,
@@ -605,7 +655,9 @@ def main(argv: list[str] | None = None) -> int:
         overwrite=args.overwrite,
         dry_run=args.dry_run,
         timeout=args.timeout,
-    ):
+        progress_callback=build_progress_callback(progress_prefix),
+    )
+    for item, destination, status in results:
         if status in {"downloaded", "skipped", "planned"}:
             print(f"[{status}] {destination}")
         else:

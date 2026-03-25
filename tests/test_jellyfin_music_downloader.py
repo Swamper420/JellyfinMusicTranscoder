@@ -11,12 +11,31 @@ from jellyfin_music_downloader import (
     build_output_path,
     download_items,
     download_one,
+    format_progress_bar,
     parse_args,
+    render_progress,
     validate_output_format,
 )
 
 
 class JellyfinMusicDownloaderTests(unittest.TestCase):
+    def test_format_progress_bar_reports_completion_counts(self) -> None:
+        self.assertEqual(format_progress_bar(2, 4, width=10), "[=====-----] 2/4")
+
+    def test_format_progress_bar_handles_empty_totals_without_dividing(self) -> None:
+        self.assertEqual(format_progress_bar(0, 0, width=10), "[----------] 0/0")
+
+    def test_render_progress_writes_in_place_for_tty_streams(self) -> None:
+        class TtyBuffer(io.StringIO):
+            def isatty(self) -> bool:
+                return True
+
+        stream = TtyBuffer()
+
+        render_progress(3, 5, stream=stream, prefix="Downloading", done=True)
+
+        self.assertEqual(stream.getvalue(), "\rDownloading [==================------------] 3/5\n")
+
     def test_build_output_path_uses_artist_album_and_track_numbers(self) -> None:
         item = AudioItem(
             item_id="1",
@@ -203,6 +222,43 @@ class JellyfinMusicDownloaderTests(unittest.TestCase):
         _, destination, status = results[0]
         self.assertEqual(destination, Path(temp_dir) / "Artist" / "Album" / "01 - Song.mp3")
         self.assertIn("network down", status)
+
+    def test_download_items_invokes_progress_callback_for_each_completed_item(self) -> None:
+        items = [
+            AudioItem("55", "Song One", "Album", "Artist", 1, None, "/track1.mp3"),
+            AudioItem("56", "Song Two", "Album", "Artist", 2, None, "/track2.mp3"),
+        ]
+        client = JellyfinClient("https://example.com", "username", "password", user_id="user-1")
+        progress_updates: list[tuple[int, int, str]] = []
+
+        def mock_download_one(*args, **kwargs):
+            item = args[1]
+            return build_output_path(Path("/downloads"), item, "original"), "planned"
+
+        def record_progress(completed: int, total: int, item: AudioItem, destination: Path, status: str) -> None:
+            del destination, status
+            progress_updates.append((completed, total, item.item_id))
+
+        with patch("jellyfin_music_downloader.download_one", side_effect=mock_download_one):
+            results = download_items(
+                client=client,
+                items=items,
+                output_dir=Path("/downloads"),
+                output_format="original",
+                audio_codec=None,
+                audio_bitrate=None,
+                audio_sample_rate=None,
+                parallel=2,
+                overwrite=True,
+                dry_run=True,
+                timeout=5,
+                progress_callback=record_progress,
+            )
+
+        self.assertEqual(len(results), 2)
+        self.assertEqual({total for _, total, _ in progress_updates}, {2})
+        self.assertEqual(sorted(completed for completed, _, _ in progress_updates), [1, 2])
+        self.assertEqual({item_id for _, _, item_id in progress_updates}, {"55", "56"})
 
 
 if __name__ == "__main__":
