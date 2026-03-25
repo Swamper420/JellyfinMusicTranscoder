@@ -15,7 +15,7 @@ from typing import Any, Iterable
 
 DEVICE_ID = "jellyfin-music-downloader"
 CLIENT_NAME = "JellyfinMusicDownloader"
-CLIENT_VERSION = "1.0"
+CLIENT_VERSION = "2.0"
 
 SAFE_FORMAT = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 INVALID_PATH_CHARS = re.compile(r'[<>:"/\\|?*\x00-\x1F]')
@@ -57,13 +57,11 @@ def _maybe_int(value: Any) -> int | None:
     try:
         return int(value)
     except (TypeError, ValueError):
-        # Jellyfin metadata is occasionally incomplete or non-numeric; treat it the same as a missing track number.
         return None
 
 
 def _sanitize_path_component(value: str) -> str:
     sanitized = INVALID_PATH_CHARS.sub("_", value.strip())
-    # Windows disallows trailing periods and spaces in path components.
     sanitized = sanitized.rstrip(". ")
     return sanitized or "Unknown"
 
@@ -121,13 +119,11 @@ class JellyfinClient:
         if output_format == "original":
             return self._build_url(f"/Items/{item.item_id}/Download", {"api_key": self.api_token})
 
+        # FIXED: Removed `"Static": "true"` which was causing the 400 Bad Request during transcoding
         params = {
-            "Static": "true",
             "UserId": self.user_id,
             "DeviceId": DEVICE_ID,
             "api_key": self.api_token,
-            "TranscodingContainer": output_format,
-            "TranscodingProtocol": "http",
         }
         if audio_codec:
             params["AudioCodec"] = audio_codec
@@ -265,6 +261,26 @@ def prompt_bool(label: str, default: bool = False, *, input_func: Any = None) ->
         print("Please answer y or n.", file=sys.stderr)
 
 
+def prompt_choice(label: str, choices: list[tuple[str, Any]], default_idx: int = 0, input_func: Any = None) -> Any:
+    """Displays a numbered list of choices to the user for easy selection."""
+    if input_func is None:
+        input_func = input
+    print(f"\n--- {label} ---")
+    for i, (text, _) in enumerate(choices):
+        marker = "*" if i == default_idx else " "
+        print(f"[{i + 1}] {marker} {text}")
+
+    while True:
+        choice = input_func(f"Select an option (1-{len(choices)}) [Default: {default_idx + 1}]: ").strip()
+        if not choice:
+            return choices[default_idx][1]
+        if choice.isdigit():
+            idx = int(choice) - 1
+            if 0 <= idx < len(choices):
+                return choices[idx][1]
+        print("Invalid selection. Please enter a valid number.")
+
+
 def _read_secret(prompt: str) -> str:
     try:
         import getpass
@@ -286,8 +302,10 @@ def should_use_interactive_ui(argv: list[str] | None) -> bool:
 def prompt_for_missing_args(args: argparse.Namespace, *, input_func: Any = None) -> argparse.Namespace:
     if input_func is None:
         input_func = input
-    print("Jellyfin Music Downloader Setup")
-    print("--------------------------------")
+    print("\n" + "=" * 45)
+    print("🎵 Jellyfin Music Downloader Setup Wizard 🎵")
+    print("=" * 45 + "\n")
+
     args.server_url = args.server_url or prompt_text(
         "Server URL",
         "https://jellyfin.example.com",
@@ -304,22 +322,50 @@ def prompt_for_missing_args(args: argparse.Namespace, *, input_func: Any = None)
     args.output_dir = Path(
         prompt_text("Output directory", output_dir, required=True, input_func=input_func) or output_dir
     )
-    args.user_id = args.user_id or prompt_text("User ID (leave blank for /Users/Me)", input_func=input_func)
-    args.format = validate_output_format(
-        prompt_text("Output format", args.format or "original", required=True, input_func=input_func) or "original"
-    )
+    args.user_id = args.user_id or prompt_text("User ID (leave blank to auto-detect)", input_func=input_func)
+
+    # --- Interactive Media Selection Menus ---
+    formats = [
+        ("Original (No Transcoding)", "original"),
+        ("MP3", "mp3"),
+        ("FLAC (Lossless)", "flac"),
+        ("AAC", "aac"),
+        ("OPUS", "opus"),
+        ("OGG", "ogg")
+    ]
+    args.format = prompt_choice("Output Format", formats, input_func=input_func)
 
     if args.format == "original":
         args.audio_codec = None
         args.audio_bitrate = None
         args.audio_sample_rate = None
     else:
-        args.audio_codec = args.audio_codec or prompt_text("Audio codec (optional)", input_func=input_func)
-        if args.audio_bitrate is None:
-            args.audio_bitrate = prompt_int("Audio bitrate in bps (optional)", input_func=input_func)
-        if args.audio_sample_rate is None:
-            args.audio_sample_rate = prompt_int("Audio sample rate in Hz (optional)", input_func=input_func)
+        # Automatically set codec to match the selected format
+        args.audio_codec = args.format
 
+        # Bitrate Selection (Skip if lossless FLAC)
+        if args.format != "flac":
+            bitrates = [
+                ("320 kbps (High Quality)", 320000),
+                ("256 kbps (Good Quality)", 256000),
+                ("192 kbps (Standard Quality)", 192000),
+                ("128 kbps (Lower Quality)", 128000),
+                ("Keep Original / Auto", None)
+            ]
+            args.audio_bitrate = prompt_choice("Audio Bitrate", bitrates, input_func=input_func)
+        else:
+            args.audio_bitrate = None
+
+        # Sample Rate Selection
+        sample_rates = [
+            ("Keep Original / Auto", None),
+            ("48000 Hz", 48000),
+            ("44100 Hz (CD Quality)", 44100)
+        ]
+        args.audio_sample_rate = prompt_choice("Sample Rate", sample_rates, input_func=input_func)
+    # ----------------------------------------
+
+    print()
     if args.parallel is None:
         args.parallel = prompt_int("Parallel downloads", 4, minimum=1, input_func=input_func) or 4
     if args.timeout is None:
@@ -327,7 +373,9 @@ def prompt_for_missing_args(args: argparse.Namespace, *, input_func: Any = None)
     if not args.overwrite:
         args.overwrite = prompt_bool("Overwrite existing files", False, input_func=input_func)
     if not args.dry_run:
-        args.dry_run = prompt_bool("Dry run only", False, input_func=input_func)
+        args.dry_run = prompt_bool("Dry run only (test without downloading)", False, input_func=input_func)
+
+    print("\n" + "=" * 45 + "\n")
     return args
 
 
