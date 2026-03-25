@@ -12,6 +12,16 @@ This repository provides a small CLI that downloads every audio item visible to 
 
 ## Usage
 
+Launch the interactive terminal setup UI:
+
+```bash
+python jellyfin_music_downloader.py --interactive
+```
+
+You can also just run `python jellyfin_music_downloader.py` in a terminal and the setup prompts will appear automatically.
+
+Run directly with flags:
+
 ```bash
 python jellyfin_music_downloader.py \
   --server-url https://jellyfin.example.com \
