@@ -249,6 +249,36 @@ class JellyfinMusicDownloaderTests(unittest.TestCase):
             ["Beach House", "Beat Happening", "Björk", "Boards of Canada"],
         )
 
+    def test_prompt_paginated_multi_choice_supports_arrow_navigation_and_space_selection(self) -> None:
+        responses = iter([" ", "\x1b[B", " ", ""])
+
+        def fake_input(prompt: str) -> str:
+            return next(responses)
+
+        selected = prompt_paginated_multi_choice(
+            "Choose artists",
+            [("Artist A", "Artist A"), ("Artist B", "Artist B")],
+            page_size=2,
+            input_func=fake_input,
+        )
+
+        self.assertEqual(selected, ["Artist A", "Artist B"])
+
+    def test_prompt_paginated_multi_choice_supports_side_arrow_paging(self) -> None:
+        responses = iter(["\x1b[C", " ", "\x1b[D", " ", ""])
+
+        def fake_input(prompt: str) -> str:
+            return next(responses)
+
+        selected = prompt_paginated_multi_choice(
+            "Choose artists",
+            [("Artist A", "Artist A"), ("Artist B", "Artist B"), ("Artist C", "Artist C"), ("Artist D", "Artist D")],
+            page_size=2,
+            input_func=fake_input,
+        )
+
+        self.assertEqual(selected, ["Artist C", "Artist A"])
+
     def test_iter_audio_items_reports_discovery_progress_until_complete(self) -> None:
         client = JellyfinClient("https://example.com", "username", "password", user_id="user-1")
         progress_updates: list[tuple[int, int, bool]] = []
