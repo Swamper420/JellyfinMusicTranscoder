@@ -380,6 +380,83 @@ def prompt_choice(label: str, choices: list[tuple[str, Any]], default_idx: int =
         print("Invalid selection. Please enter a valid number.")
 
 
+def _read_paginated_multi_choice_input(prompt: str) -> str:
+    if not supports_interactive_ui():
+        return input(prompt)
+
+    sys.stdout.write(prompt)
+    sys.stdout.flush()
+    buffer: list[str] = []
+
+    def _finish(value: str) -> str:
+        sys.stdout.write("\n")
+        sys.stdout.flush()
+        return value
+
+    if sys.platform == "win32":
+        import msvcrt
+
+        while True:
+            key = msvcrt.getwch()
+            if key in {"\r", "\n"}:
+                return _finish("".join(buffer))
+            if key in {"\x00", "\xe0"}:
+                arrow = msvcrt.getwch()
+                if not buffer:
+                    if arrow == "H":
+                        return _finish("\x1b[A")
+                    if arrow == "P":
+                        return _finish("\x1b[B")
+                    if arrow == "M":
+                        return _finish("\x1b[C")
+                    if arrow == "K":
+                        return _finish("\x1b[D")
+                continue
+            if key in {"\b", "\x7f"}:
+                if buffer:
+                    buffer.pop()
+                    sys.stdout.write("\b \b")
+                    sys.stdout.flush()
+                continue
+            if key == " " and not buffer:
+                return _finish(" ")
+            if key.isprintable():
+                buffer.append(key)
+                sys.stdout.write(key)
+                sys.stdout.flush()
+    else:
+        import termios
+        import tty
+
+        file_descriptor = sys.stdin.fileno()
+        original_settings = termios.tcgetattr(file_descriptor)
+        try:
+            tty.setraw(file_descriptor)
+            while True:
+                key = sys.stdin.read(1)
+                if key in {"\r", "\n"}:
+                    return _finish("".join(buffer))
+                if key == "\x1b":
+                    sequence = key + sys.stdin.read(1) + sys.stdin.read(1)
+                    if not buffer and sequence in {"\x1b[A", "\x1b[B", "\x1b[C", "\x1b[D"}:
+                        return _finish(sequence)
+                    continue
+                if key in {"\b", "\x7f"}:
+                    if buffer:
+                        buffer.pop()
+                        sys.stdout.write("\b \b")
+                        sys.stdout.flush()
+                    continue
+                if key == " " and not buffer:
+                    return _finish(" ")
+                if key.isprintable():
+                    buffer.append(key)
+                    sys.stdout.write(key)
+                    sys.stdout.flush()
+        finally:
+            termios.tcsetattr(file_descriptor, termios.TCSADRAIN, original_settings)
+
+
 def prompt_paginated_multi_choice(
     label: str,
     choices: list[tuple[str, Any]],
@@ -388,7 +465,7 @@ def prompt_paginated_multi_choice(
     input_func: Callable[[str], str] | None = None,
 ) -> list[Any]:
     if input_func is None:
-        input_func = input
+        input_func = _read_paginated_multi_choice_input
     if page_size < 1:
         raise ValueError("page_size must be at least 1")
     if not choices:
@@ -398,6 +475,7 @@ def prompt_paginated_multi_choice(
     selected_lookup: set[Any] = set()
     page_index = 0
     filter_query = ""
+    highlighted_index = 0
 
     while True:
         filtered_choices = [
@@ -409,6 +487,10 @@ def prompt_paginated_multi_choice(
         page_index = min(page_index, total_pages - 1)
         start = page_index * page_size
         end = min(start + page_size, len(filtered_choices))
+        if filtered_choices:
+            highlighted_index = min(max(highlighted_index, start), end - 1)
+        else:
+            highlighted_index = 0
         print(f"\n--- {label} (Page {page_index + 1}/{total_pages}) ---")
         print(f"Selected: {len(selected_values)}/{len(choices)}", end="")
         if filter_query:
@@ -418,16 +500,61 @@ def prompt_paginated_multi_choice(
 
         if filtered_choices:
             for display_index, (text, value) in enumerate(filtered_choices[start:end], start=1):
+                actual_index = start + display_index - 1
+                cursor = ">" if actual_index == highlighted_index else " "
                 marker = "*" if value in selected_lookup else " "
-                print(f"[{display_index}] {marker} {text}")
+                print(f"[{display_index}] {cursor}{marker} {text}")
         else:
             print("No matches for the current filter.")
 
-        print("Enter space-separated numbers or ranges (for example 1 3-5) to toggle selections,")
-        print("n/p for next/previous page, /text to filter, x to clear the filter,")
-        print("a to select all shown, c to clear all, or press Enter to confirm the current selection.")
+        print(
+            "Enter space-separated numbers or ranges (for example 1 3-5) to toggle selections,\n"
+            "↑/↓ to move on the current page, ←/→ for previous/next page, space to toggle the highlighted item,\n"
+            "n/p for next/previous page, /text to filter, x to clear the filter,\n"
+            "a to select all shown, c to clear all, or press Enter to confirm the current selection."
+        )
 
-        raw_choice = input_func("Selection: ").strip()
+        raw_choice = input_func("Selection: ")
+        if raw_choice == "\x1b[A":
+            if filtered_choices and highlighted_index > start:
+                highlighted_index -= 1
+            continue
+        if raw_choice == "\x1b[B":
+            if filtered_choices and highlighted_index < end - 1:
+                highlighted_index += 1
+            continue
+        if raw_choice == "\x1b[C":
+            if page_index < total_pages - 1:
+                page_index += 1
+                next_start = page_index * page_size
+                next_end = min(next_start + page_size, len(filtered_choices))
+                highlighted_index = min(next_start + (highlighted_index - start), next_end - 1)
+            else:
+                print("Already on the last page.", file=sys.stderr)
+            continue
+        if raw_choice == "\x1b[D":
+            if page_index > 0:
+                page_index -= 1
+                previous_start = page_index * page_size
+                previous_end = min(previous_start + page_size, len(filtered_choices))
+                highlighted_index = min(previous_start + (highlighted_index - start), previous_end - 1)
+            else:
+                print("Already on the first page.", file=sys.stderr)
+            continue
+        if raw_choice == " ":
+            if not filtered_choices:
+                print("No items are available on the current page.", file=sys.stderr)
+                continue
+            selected_value = filtered_choices[highlighted_index][1]
+            if selected_value in selected_lookup:
+                selected_lookup.remove(selected_value)
+                selected_values = [existing for existing in selected_values if existing != selected_value]
+            else:
+                selected_lookup.add(selected_value)
+                selected_values.append(selected_value)
+            continue
+
+        raw_choice = raw_choice.strip()
         lowered_choice = raw_choice.lower()
         if not raw_choice:
             if selected_values:
@@ -437,20 +564,28 @@ def prompt_paginated_multi_choice(
         if raw_choice.startswith("/"):
             filter_query = raw_choice[1:].strip()
             page_index = 0
+            highlighted_index = 0
             continue
         if lowered_choice == "x":
             filter_query = ""
             page_index = 0
+            highlighted_index = 0
             continue
         if lowered_choice == "n":
             if page_index < total_pages - 1:
                 page_index += 1
+                next_start = page_index * page_size
+                next_end = min(next_start + page_size, len(filtered_choices))
+                highlighted_index = min(next_start + (highlighted_index - start), next_end - 1)
             else:
                 print("Already on the last page.", file=sys.stderr)
             continue
         if lowered_choice == "p":
             if page_index > 0:
                 page_index -= 1
+                previous_start = page_index * page_size
+                previous_end = min(previous_start + page_size, len(filtered_choices))
+                highlighted_index = min(previous_start + (highlighted_index - start), previous_end - 1)
             else:
                 print("Already on the first page.", file=sys.stderr)
             continue
