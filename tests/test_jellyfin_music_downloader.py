@@ -226,6 +226,61 @@ class JellyfinMusicDownloaderTests(unittest.TestCase):
 
         self.assertEqual(selected, ["Artist A", "Artist B", "Artist D"])
 
+    def test_prompt_paginated_multi_choice_supports_filtering_ranges_and_accumulated_selection(self) -> None:
+        responses = iter(["/bea", "a", "x", "3-4", ""])
+
+        def fake_input(prompt: str) -> str:
+            return next(responses)
+
+        selected = prompt_paginated_multi_choice(
+            "Choose artists",
+            [
+                ("Beach House", "Beach House"),
+                ("Beat Happening", "Beat Happening"),
+                ("Björk", "Björk"),
+                ("Boards of Canada", "Boards of Canada"),
+            ],
+            page_size=4,
+            input_func=fake_input,
+        )
+
+        self.assertEqual(
+            selected,
+            ["Beach House", "Beat Happening", "Björk", "Boards of Canada"],
+        )
+
+    def test_iter_audio_items_reports_discovery_progress_until_complete(self) -> None:
+        client = JellyfinClient("https://example.com", "username", "password", user_id="user-1")
+        progress_updates: list[tuple[int, int, bool]] = []
+
+        with patch.object(
+            client,
+            "_request_json",
+            side_effect=[
+                {
+                    "Items": [
+                        {"Id": "1", "Name": "Song One", "Album": "Album", "AlbumArtist": "Artist"},
+                        {"Id": "2", "Name": "Song Two", "Album": "Album", "AlbumArtist": "Artist"},
+                    ],
+                    "TotalRecordCount": 3,
+                },
+                {
+                    "Items": [
+                        {"Id": "3", "Name": "Song Three", "Album": "Album", "AlbumArtist": "Artist"},
+                    ],
+                    "TotalRecordCount": 3,
+                },
+            ],
+        ):
+            items = list(
+                client.iter_audio_items(
+                    progress_callback=lambda completed, total, done: progress_updates.append((completed, total, done))
+                )
+            )
+
+        self.assertEqual([item.item_id for item in items], ["1", "2", "3"])
+        self.assertEqual(progress_updates, [(0, 0, False), (2, 3, False), (3, 3, True)])
+
     def test_download_one_skips_existing_files_without_overwrite(self) -> None:
         item = AudioItem("55", "Song", "Album", "Artist", 1, None, "/track.mp3")
         client = JellyfinClient("https://example.com", "username", "password", user_id="user-1")

@@ -115,10 +115,15 @@ class JellyfinClient:
         if not self._user_id:
             self._user_id = str(payload["User"]["Id"])
 
-    def iter_audio_items(self) -> Iterable[AudioItem]:
+    def iter_audio_items(
+        self,
+        progress_callback: Callable[[int, int, bool], None] | None = None,
+    ) -> Iterable[AudioItem]:
         start_index = 0
         page_size = 200
         total = None
+        if progress_callback is not None:
+            progress_callback(0, 0, False)
 
         while total is None or start_index < total:
             response = self._request_json(
@@ -134,6 +139,8 @@ class JellyfinClient:
 
             items = response.get("Items") or []
             total = int(response.get("TotalRecordCount", len(items)))
+            if progress_callback is not None:
+                progress_callback(start_index + len(items), total, not items or start_index + len(items) >= total)
             if not items:
                 break
 
@@ -275,6 +282,19 @@ def build_progress_callback(prefix: str) -> Callable[[int, int, AudioItem, Path,
     return on_progress
 
 
+def build_discovery_progress_callback(prefix: str) -> Callable[[int, int, bool], None]:
+    def on_progress(completed: int, total: int, done: bool) -> None:
+        render_progress(
+            completed,
+            total,
+            stream=sys.stderr,
+            prefix=prefix,
+            done=done,
+        )
+
+    return on_progress
+
+
 def prompt_text(
     label: str,
     default: str | None = None,
@@ -377,51 +397,102 @@ def prompt_paginated_multi_choice(
     selected_values: list[Any] = []
     selected_lookup: set[Any] = set()
     page_index = 0
-    total_pages = (len(choices) - 1) // page_size + 1
+    filter_query = ""
 
     while True:
+        filtered_choices = [
+            (text, value)
+            for text, value in choices
+            if not filter_query or filter_query.casefold() in text.casefold()
+        ]
+        total_pages = max(1, (len(filtered_choices) - 1) // page_size + 1)
+        page_index = min(page_index, total_pages - 1)
         start = page_index * page_size
-        end = min(start + page_size, len(choices))
+        end = min(start + page_size, len(filtered_choices))
         print(f"\n--- {label} (Page {page_index + 1}/{total_pages}) ---")
-        for display_index, (text, value) in enumerate(choices[start:end], start=1):
-            marker = "*" if value in selected_lookup else " "
-            print(f"[{display_index}] {marker} {text}")
-        print("Enter space-separated numbers to toggle selections, n/p for next/previous page,")
-        print("a to select all, c to clear all, or press Enter to confirm the current selection.")
+        print(f"Selected: {len(selected_values)}/{len(choices)}", end="")
+        if filter_query:
+            print(f" | Filter: {filter_query} ({len(filtered_choices)} matches)")
+        else:
+            print()
 
-        raw_choice = input_func("Selection: ").strip().lower()
+        if filtered_choices:
+            for display_index, (text, value) in enumerate(filtered_choices[start:end], start=1):
+                marker = "*" if value in selected_lookup else " "
+                print(f"[{display_index}] {marker} {text}")
+        else:
+            print("No matches for the current filter.")
+
+        print("Enter space-separated numbers or ranges (for example 1 3-5) to toggle selections,")
+        print("n/p for next/previous page, /text to filter, x to clear the filter,")
+        print("a to select all shown, c to clear all, or press Enter to confirm the current selection.")
+
+        raw_choice = input_func("Selection: ").strip()
+        lowered_choice = raw_choice.lower()
         if not raw_choice:
             if selected_values:
                 return selected_values
             print("Select at least one item before continuing.", file=sys.stderr)
             continue
-        if raw_choice == "n":
+        if raw_choice.startswith("/"):
+            filter_query = raw_choice[1:].strip()
+            page_index = 0
+            continue
+        if lowered_choice == "x":
+            filter_query = ""
+            page_index = 0
+            continue
+        if lowered_choice == "n":
             if page_index < total_pages - 1:
                 page_index += 1
             else:
                 print("Already on the last page.", file=sys.stderr)
             continue
-        if raw_choice == "p":
+        if lowered_choice == "p":
             if page_index > 0:
                 page_index -= 1
             else:
                 print("Already on the first page.", file=sys.stderr)
             continue
-        if raw_choice == "a":
-            selected_values = [value for _, value in choices]
-            selected_lookup = set(selected_values)
+        if lowered_choice == "a":
+            selectable_choices = filtered_choices if filter_query else choices
+            if filter_query:
+                for _, value in selectable_choices:
+                    if value not in selected_lookup:
+                        selected_lookup.add(value)
+                        selected_values.append(value)
+            else:
+                selected_values = [value for _, value in selectable_choices]
+                selected_lookup = set(selected_values)
             continue
-        if raw_choice == "c":
+        if lowered_choice == "c":
             selected_values = []
             selected_lookup.clear()
             continue
 
-        tokens = raw_choice.split()
-        page_values = [value for _, value in choices[start:end]]
+        tokens = raw_choice.replace(",", " ").split()
+        page_values = [value for _, value in filtered_choices[start:end]]
+        if not page_values:
+            print("No items are available on the current page.", file=sys.stderr)
+            continue
+
+        indices: list[int] = []
         try:
-            indices = [int(token) for token in tokens]
+            for token in tokens:
+                if "-" in token:
+                    start_token, end_token = token.split("-", 1)
+                    start_index_token = int(start_token)
+                    end_index_token = int(end_token)
+                    if start_index_token > end_index_token:
+                        raise ValueError("Range start must be less than or equal to range end.")
+                    indices.extend(range(start_index_token, end_index_token + 1))
+                else:
+                    indices.append(int(token))
         except ValueError:
-            print("Invalid selection. Enter numbers separated by spaces, n, p, a, c, or Enter.", file=sys.stderr)
+            print(
+                "Invalid selection. Enter numbers or ranges separated by spaces, n, p, /text, x, a, c, or Enter.",
+                file=sys.stderr,
+            )
             continue
 
         if any(index < 1 or index > len(page_values) for index in indices):
@@ -793,7 +864,11 @@ def main(argv: list[str] | None = None) -> int:
         timeout=args.timeout,
     )
 
-    items = list(client.iter_audio_items())
+    items = list(
+        client.iter_audio_items(
+            progress_callback=build_discovery_progress_callback("Discovering"),
+        )
+    )
     if not items:
         print("No audio items were found.", file=sys.stderr)
         return 1
