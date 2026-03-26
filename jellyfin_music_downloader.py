@@ -360,6 +360,84 @@ def prompt_choice(label: str, choices: list[tuple[str, Any]], default_idx: int =
         print("Invalid selection. Please enter a valid number.")
 
 
+def prompt_paginated_multi_choice(
+    label: str,
+    choices: list[tuple[str, Any]],
+    *,
+    page_size: int = 10,
+    input_func: Any = None,
+) -> list[Any]:
+    if input_func is None:
+        input_func = input
+    if page_size < 1:
+        raise ValueError("page_size must be at least 1")
+    if not choices:
+        return []
+
+    selected_values: list[Any] = []
+    selected_lookup: set[Any] = set()
+    page_index = 0
+    total_pages = (len(choices) - 1) // page_size + 1
+
+    while True:
+        start = page_index * page_size
+        end = min(start + page_size, len(choices))
+        print(f"\n--- {label} (Page {page_index + 1}/{total_pages}) ---")
+        for display_index, (text, value) in enumerate(choices[start:end], start=1):
+            marker = "*" if value in selected_lookup else " "
+            print(f"[{display_index}] {marker} {text}")
+        print("Enter space-separated numbers to toggle selections, n/p for next/previous page,")
+        print("a to select all, c to clear all, or press Enter to confirm the current selection.")
+
+        raw_choice = input_func("Selection: ").strip().lower()
+        if not raw_choice:
+            if selected_values:
+                return selected_values
+            print("Select at least one item before continuing.", file=sys.stderr)
+            continue
+        if raw_choice == "n":
+            if page_index < total_pages - 1:
+                page_index += 1
+            else:
+                print("Already on the last page.", file=sys.stderr)
+            continue
+        if raw_choice == "p":
+            if page_index > 0:
+                page_index -= 1
+            else:
+                print("Already on the first page.", file=sys.stderr)
+            continue
+        if raw_choice == "a":
+            selected_values = [value for _, value in choices]
+            selected_lookup = set(selected_values)
+            continue
+        if raw_choice == "c":
+            selected_values = []
+            selected_lookup.clear()
+            continue
+
+        tokens = raw_choice.split()
+        page_values = [value for _, value in choices[start:end]]
+        try:
+            indices = [int(token) for token in tokens]
+        except ValueError:
+            print("Invalid selection. Enter numbers separated by spaces, n, p, a, c, or Enter.", file=sys.stderr)
+            continue
+
+        if any(index < 1 or index > len(page_values) for index in indices):
+            print("Invalid selection. Choose numbers from the current page.", file=sys.stderr)
+            continue
+
+        for index in indices:
+            value = page_values[index - 1]
+            if value in selected_lookup:
+                selected_lookup.remove(value)
+                selected_values = [existing for existing in selected_values if existing != value]
+            else:
+                selected_lookup.add(value)
+                selected_values.append(value)
+
+
 def _read_secret(prompt: str) -> str:
     try:
         import getpass
@@ -376,6 +454,27 @@ def should_use_interactive_ui(argv: list[str] | None) -> bool:
     if argv is None:
         return len(sys.argv) == 1 and supports_interactive_ui()
     return len(argv) == 0 and supports_interactive_ui()
+
+
+def build_selection_choices(items: Iterable[AudioItem], selection_mode: str) -> list[tuple[str, Any]]:
+    if selection_mode == "artist":
+        artists = sorted({item.artist for item in items}, key=str.casefold)
+        return [(artist, artist) for artist in artists]
+    if selection_mode == "album":
+        albums = sorted({(item.artist, item.album) for item in items}, key=lambda value: (value[0].casefold(), value[1].casefold()))
+        return [(f"{artist} / {album}", (artist, album)) for artist, album in albums]
+    return []
+
+
+def filter_items_by_selection(items: Iterable[AudioItem], selection_mode: str, selected_values: Iterable[Any]) -> list[AudioItem]:
+    item_list = list(items)
+    if selection_mode == "artist":
+        selected_artists = set(selected_values)
+        return [item for item in item_list if item.artist in selected_artists]
+    if selection_mode == "album":
+        selected_albums = set(selected_values)
+        return [item for item in item_list if (item.artist, item.album) in selected_albums]
+    return item_list
 
 
 def prompt_for_missing_args(args: argparse.Namespace, *, input_func: Any = None) -> argparse.Namespace:
@@ -417,6 +516,12 @@ def prompt_for_missing_args(args: argparse.Namespace, *, input_func: Any = None)
         ("OPUS", "opus"),
         ("OGG", "ogg")
     ]
+    selection_modes = [
+        ("Everything", "all"),
+        ("Choose by artist", "artist"),
+        ("Choose by album", "album"),
+    ]
+    args.selection_mode = prompt_choice("Download Scope", selection_modes, input_func=input_func)
     args.format = prompt_choice("Output Format", formats, input_func=input_func)
 
     if args.format == "original":
@@ -607,6 +712,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--dry-run", action="store_true", help="Show the files that would be downloaded without writing them")
     parser.add_argument("--timeout", type=int, default=None, help="HTTP timeout in seconds")
     parser.add_argument(
+        "--selection-mode",
+        choices=("all", "artist", "album"),
+        default="all",
+        help="Download everything, or interactively choose artists or albums when running in a terminal.",
+    )
+    parser.add_argument(
         "--interactive",
         action="store_true",
         help="Launch an interactive terminal setup wizard for any missing options.",
@@ -637,6 +748,23 @@ def main(argv: list[str] | None = None) -> int:
     if not items:
         print("No audio items were found.", file=sys.stderr)
         return 1
+
+    if args.selection_mode in {"artist", "album"}:
+        if not supports_interactive_ui():
+            print(
+                f"--selection-mode {args.selection_mode} requires an interactive terminal so you can make selections.",
+                file=sys.stderr,
+            )
+            return 1
+        selection_choices = build_selection_choices(items, args.selection_mode)
+        selected_values = prompt_paginated_multi_choice(
+            f"Choose {args.selection_mode}s to download",
+            selection_choices,
+        )
+        items = filter_items_by_selection(items, args.selection_mode, selected_values)
+        if not items:
+            print("No audio items matched the selected filters.", file=sys.stderr)
+            return 1
 
     print(
         f"Found {len(items)} audio items. Starting downloads with parallelism={args.parallel}, format={args.format}."
