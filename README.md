@@ -1,12 +1,12 @@
 # Jellyfin Music Downloader CLI
 
-This repository ships a standalone Python CLI that downloads every audio item visible to a Jellyfin user and can optionally ask Jellyfin to transcode files on the way down.
+This repository ships a standalone Python CLI that downloads audio visible to a Jellyfin user and can optionally ask Jellyfin to transcode files on the way down.
 
 ## Features
 
 - Run the script directly as-is with Python
 - Interactive terminal setup wizard when you launch it without arguments
-- Downloads all audio items from a Jellyfin server
+- Downloads all audio items from a Jellyfin server, or lets you choose artists or albums interactively
 - Uses Jellyfin server-side transcoding when you request a target format
 - Supports any safe container name accepted by your Jellyfin/FFmpeg setup, such as `mp3`, `flac`, `opus`, `ogg`, `aac`, or `m4a`
 - Parallel downloads with a configurable number of simultaneous transfers
@@ -20,7 +20,7 @@ Run it directly:
 python3 jellyfin_music_downloader.py
 ```
 
-If you launch the script in a terminal without arguments, it opens the interactive setup wizard automatically so you can pick your output format and fill in the required settings from the CLI.
+If you launch the script in a terminal without arguments, it opens the interactive setup wizard automatically so you can pick your download scope, output format, and required settings from the CLI.
 
 You can also launch the wizard explicitly:
 
@@ -45,6 +45,8 @@ The wizard walks through the connection and download settings in a terminal UI s
 
 =============================================
 ```
+
+When you choose `Choose by artist` or `Choose by album`, the CLI shows paged lists and lets you toggle selections by entering space-separated numbers. Use `n` and `p` to move between pages, then press Enter to confirm the current selection.
 
 Run directly with flags:
 
@@ -77,5 +79,6 @@ Useful options include:
 - `--overwrite` to replace files instead of skipping existing downloads
 - `--dry-run` to preview what would be downloaded
 - `--parallel` to tune concurrent downloads
+- `--selection-mode artist` or `--selection-mode album` to launch the interactive selector after the library is loaded
 
 Run `python3 jellyfin_music_downloader.py --help` for the full option list.
