@@ -499,18 +499,20 @@ def prompt_paginated_multi_choice(
             print()
 
         if filtered_choices:
-            for offset, (text, value) in enumerate(filtered_choices[start:end], start=1):
-                actual_index = start + offset - 1
+            for display_index, (text, value) in enumerate(filtered_choices[start:end], start=1):
+                actual_index = start + display_index - 1
                 cursor = ">" if actual_index == highlighted_index else " "
                 marker = "*" if value in selected_lookup else " "
-                print(f"[{offset}] {cursor}{marker} {text}")
+                print(f"[{display_index}] {cursor}{marker} {text}")
         else:
             print("No matches for the current filter.")
 
-        print("Enter space-separated numbers or ranges (for example 1 3-5) to toggle selections,")
-        print("↑/↓ to move on the current page, ←/→ for previous/next page, space to toggle the highlighted item,")
-        print("n/p for next/previous page, /text to filter, x to clear the filter,")
-        print("a to select all shown, c to clear all, or press Enter to confirm the current selection.")
+        print(
+            "Enter space-separated numbers or ranges (for example 1 3-5) to toggle selections,\n"
+            "↑/↓ to move on the current page, ←/→ for previous/next page, space to toggle the highlighted item,\n"
+            "n/p for next/previous page, /text to filter, x to clear the filter,\n"
+            "a to select all shown, c to clear all, or press Enter to confirm the current selection."
+        )
 
         raw_choice = input_func("Selection: ")
         if raw_choice == "\x1b[A":
