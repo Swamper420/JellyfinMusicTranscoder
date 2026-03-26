@@ -311,6 +311,15 @@ class JellyfinMusicDownloaderTests(unittest.TestCase):
         self.assertEqual([item.item_id for item in items], ["1", "2", "3"])
         self.assertEqual(progress_updates, [(0, 0, False), (2, 3, False), (3, 3, True)])
 
+    def test_iter_audio_items_requests_name_field_for_metadata(self) -> None:
+        client = JellyfinClient("https://example.com", "username", "password", user_id="user-1")
+
+        with patch.object(client, "_request_json", return_value={"Items": [], "TotalRecordCount": 0}) as mock_request:
+            self.assertEqual(list(client.iter_audio_items()), [])
+
+        request_params = mock_request.call_args.args[1]
+        self.assertIn("Name", request_params["Fields"].split(","))
+
     def test_download_one_skips_existing_files_without_overwrite(self) -> None:
         item = AudioItem("55", "Song", "Album", "Artist", 1, None, "/track.mp3")
         client = JellyfinClient("https://example.com", "username", "password", user_id="user-1")
