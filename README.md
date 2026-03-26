@@ -53,7 +53,7 @@ The wizard walks through the connection and download settings in a terminal UI s
 =============================================
 ```
 
-When you choose `Choose by artist` or `Choose by album`, the CLI shows paged lists and lets you toggle selections by entering space-separated numbers. Arrow keys still work for navigation when your terminal reports them correctly, and you can use `W/S/A/D` as a fallback. Lowercase `a` still selects all shown items, while `n` and `p` also move between pages. Press Enter to confirm the current selection.
+When you choose `Choose by artist` or `Choose by album`, the CLI shows paged lists and lets you toggle selections by entering space-separated numbers. Arrow keys still work for navigation when your terminal reports them correctly, and you can use `W/S`, `D`, and uppercase `A` as a fallback. Lowercase `a` still selects all shown items, while `n` and `p` also move between pages. Press Enter to confirm the current selection.
 
 Run directly with flags:
 

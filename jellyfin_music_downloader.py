@@ -20,6 +20,16 @@ CLIENT_VERSION = "2.0"
 SAFE_FORMAT = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 INVALID_PATH_CHARS = re.compile(r'[<>:"/\\|?*\x00-\x1F]')
 PROGRESS_BAR_WIDTH = 30
+NAVIGATION_ALIASES = {
+    "w": "\x1b[A",
+    "W": "\x1b[A",
+    "s": "\x1b[B",
+    "S": "\x1b[B",
+    "d": "\x1b[C",
+    "D": "\x1b[C",
+    # Lowercase a remains available for "select all" in the selection prompt.
+    "A": "\x1b[D",
+}
 
 
 @dataclass(frozen=True)
@@ -393,16 +403,6 @@ def _read_paginated_multi_choice_input(prompt: str) -> str:
         sys.stdout.flush()
         return value
 
-    navigation_aliases = {
-        "w": "\x1b[A",
-        "W": "\x1b[A",
-        "s": "\x1b[B",
-        "S": "\x1b[B",
-        "d": "\x1b[C",
-        "D": "\x1b[C",
-        "A": "\x1b[D",
-    }
-
     if sys.platform == "win32":
         import msvcrt
 
@@ -430,8 +430,8 @@ def _read_paginated_multi_choice_input(prompt: str) -> str:
                 continue
             if key == " " and not buffer:
                 return _finish(" ")
-            if not buffer and key in navigation_aliases:
-                return _finish(navigation_aliases[key])
+            if not buffer and key in NAVIGATION_ALIASES:
+                return _finish(NAVIGATION_ALIASES[key])
             if key.isprintable():
                 buffer.append(key)
                 sys.stdout.write(key)
@@ -461,8 +461,8 @@ def _read_paginated_multi_choice_input(prompt: str) -> str:
                     continue
                 if key == " " and not buffer:
                     return _finish(" ")
-                if not buffer and key in navigation_aliases:
-                    return _finish(navigation_aliases[key])
+                if not buffer and key in NAVIGATION_ALIASES:
+                    return _finish(NAVIGATION_ALIASES[key])
                 if key.isprintable():
                     buffer.append(key)
                     sys.stdout.write(key)
@@ -523,12 +523,18 @@ def prompt_paginated_multi_choice(
 
         print(
             "Enter space-separated numbers or ranges (for example 1 3-5) to toggle selections,\n"
-            "↑/↓ or W/S move on the current page, ←/→ or A/D move between pages, space toggles the highlighted item,\n"
+            "↑/↓ or W/S move on the current page, ←/→ or uppercase A/D move between pages, space toggles the highlighted item,\n"
             "n/p also move between pages, /text filters, x clears the filter,\n"
             "lowercase a selects all shown, c clears all, or press Enter to confirm the current selection."
         )
 
         raw_choice = input_func("Selection: ")
+        if raw_choice == " ":
+            normalized_choice = raw_choice
+        else:
+            normalized_choice = raw_choice.strip()
+            normalized_choice = NAVIGATION_ALIASES.get(normalized_choice, normalized_choice)
+        raw_choice = normalized_choice
         if raw_choice == "\x1b[A":
             if filtered_choices and highlighted_index > start:
                 highlighted_index -= 1
@@ -568,33 +574,6 @@ def prompt_paginated_multi_choice(
                 selected_values.append(selected_value)
             continue
 
-        raw_choice = raw_choice.strip()
-        if raw_choice in {"W", "w"}:
-            if filtered_choices and highlighted_index > start:
-                highlighted_index -= 1
-            continue
-        if raw_choice in {"S", "s"}:
-            if filtered_choices and highlighted_index < end - 1:
-                highlighted_index += 1
-            continue
-        if raw_choice in {"D", "d"}:
-            if page_index < total_pages - 1:
-                page_index += 1
-                next_start = page_index * page_size
-                next_end = min(next_start + page_size, len(filtered_choices))
-                highlighted_index = min(next_start + (highlighted_index - start), next_end - 1)
-            else:
-                print("Already on the last page.", file=sys.stderr)
-            continue
-        if raw_choice == "A":
-            if page_index > 0:
-                page_index -= 1
-                previous_start = page_index * page_size
-                previous_end = min(previous_start + page_size, len(filtered_choices))
-                highlighted_index = min(previous_start + (highlighted_index - start), previous_end - 1)
-            else:
-                print("Already on the first page.", file=sys.stderr)
-            continue
         lowered_choice = raw_choice.lower()
         if not raw_choice:
             if selected_values:
