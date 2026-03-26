@@ -279,6 +279,21 @@ class JellyfinMusicDownloaderTests(unittest.TestCase):
 
         self.assertEqual(selected, ["Artist C", "Artist A"])
 
+    def test_prompt_paginated_multi_choice_supports_wasd_navigation_fallback(self) -> None:
+        responses = iter(["s", " ", "w", "d", " ", "A", ""])
+
+        def fake_input(prompt: str) -> str:
+            return next(responses)
+
+        selected = prompt_paginated_multi_choice(
+            "Choose artists",
+            [("Artist A", "Artist A"), ("Artist B", "Artist B"), ("Artist C", "Artist C"), ("Artist D", "Artist D")],
+            page_size=2,
+            input_func=fake_input,
+        )
+
+        self.assertEqual(selected, ["Artist B", "Artist C"])
+
     def test_iter_audio_items_reports_discovery_progress_until_complete(self) -> None:
         client = JellyfinClient("https://example.com", "username", "password", user_id="user-1")
         progress_updates: list[tuple[int, int, bool]] = []

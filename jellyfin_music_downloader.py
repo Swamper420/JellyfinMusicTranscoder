@@ -20,6 +20,16 @@ CLIENT_VERSION = "2.0"
 SAFE_FORMAT = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 INVALID_PATH_CHARS = re.compile(r'[<>:"/\\|?*\x00-\x1F]')
 PROGRESS_BAR_WIDTH = 30
+NAVIGATION_ALIASES = {
+    "w": "\x1b[A",
+    "W": "\x1b[A",
+    "s": "\x1b[B",
+    "S": "\x1b[B",
+    "d": "\x1b[C",
+    "D": "\x1b[C",
+    # Lowercase a remains available for "select all" in the selection prompt.
+    "A": "\x1b[D",
+}
 
 
 @dataclass(frozen=True)
@@ -420,6 +430,8 @@ def _read_paginated_multi_choice_input(prompt: str) -> str:
                 continue
             if key == " " and not buffer:
                 return _finish(" ")
+            if not buffer and key in NAVIGATION_ALIASES:
+                return _finish(NAVIGATION_ALIASES[key])
             if key.isprintable():
                 buffer.append(key)
                 sys.stdout.write(key)
@@ -449,6 +461,8 @@ def _read_paginated_multi_choice_input(prompt: str) -> str:
                     continue
                 if key == " " and not buffer:
                     return _finish(" ")
+                if not buffer and key in NAVIGATION_ALIASES:
+                    return _finish(NAVIGATION_ALIASES[key])
                 if key.isprintable():
                     buffer.append(key)
                     sys.stdout.write(key)
@@ -509,12 +523,18 @@ def prompt_paginated_multi_choice(
 
         print(
             "Enter space-separated numbers or ranges (for example 1 3-5) to toggle selections,\n"
-            "↑/↓ to move on the current page, ←/→ for previous/next page, space to toggle the highlighted item,\n"
-            "n/p for next/previous page, /text to filter, x to clear the filter,\n"
-            "a to select all shown, c to clear all, or press Enter to confirm the current selection."
+            "↑/↓ or W/S move on the current page, ←/→ or uppercase A/D move between pages, space toggles the highlighted item,\n"
+            "n/p also move between pages, /text filters, x clears the filter,\n"
+            "lowercase a selects all shown, c clears all, or press Enter to confirm the current selection."
         )
 
         raw_choice = input_func("Selection: ")
+        if raw_choice == " ":
+            normalized_choice = raw_choice
+        else:
+            normalized_choice = raw_choice.strip()
+            normalized_choice = NAVIGATION_ALIASES.get(normalized_choice, normalized_choice)
+        raw_choice = normalized_choice
         if raw_choice == "\x1b[A":
             if filtered_choices and highlighted_index > start:
                 highlighted_index -= 1
@@ -554,7 +574,6 @@ def prompt_paginated_multi_choice(
                 selected_values.append(selected_value)
             continue
 
-        raw_choice = raw_choice.strip()
         lowered_choice = raw_choice.lower()
         if not raw_choice:
             if selected_values:
