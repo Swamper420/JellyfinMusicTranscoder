@@ -643,6 +643,48 @@ def download_items(
     return results
 
 
+def _open_metadata_tags(destination: Path) -> Any | None:
+    try:
+        from mutagen.easymp4 import EasyMP4
+        from mutagen.flac import FLAC
+        from mutagen.mp3 import EasyMP3
+        from mutagen.oggopus import OggOpus
+        from mutagen.oggvorbis import OggVorbis
+    except ImportError as error:
+        raise RuntimeError(
+            "Metadata passthrough for transcoded downloads requires the optional 'mutagen' dependency. "
+            "Install requirements.txt before downloading transcoded files."
+        ) from error
+
+    extension = destination.suffix.lower()
+    if extension == ".mp3":
+        return EasyMP3(destination)
+    if extension == ".flac":
+        return FLAC(destination)
+    if extension in {".ogg", ".oga"}:
+        return OggVorbis(destination)
+    if extension == ".opus":
+        return OggOpus(destination)
+    if extension in {".m4a", ".mp4"}:
+        return EasyMP4(destination)
+    return None
+
+
+def write_download_metadata(destination: Path, item: AudioItem) -> None:
+    audio = _open_metadata_tags(destination)
+    if audio is None:
+        return
+
+    audio["title"] = [item.name]
+    audio["album"] = [item.album]
+    audio["artist"] = [item.artist]
+    if item.index_number is not None:
+        audio["tracknumber"] = [str(item.index_number)]
+    if item.parent_index_number is not None:
+        audio["discnumber"] = [str(item.parent_index_number)]
+    audio.save()
+
+
 def download_one(
     client: JellyfinClient,
     item: AudioItem,
@@ -676,6 +718,9 @@ def download_one(
 
     with urllib.request.urlopen(request, timeout=timeout) as response, destination.open("wb") as output_handle:
         shutil.copyfileobj(response, output_handle)
+
+    if output_format != "original":
+        write_download_metadata(destination, item)
 
     return destination, "downloaded"
 

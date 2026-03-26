@@ -18,6 +18,7 @@ from jellyfin_music_downloader import (
     prompt_paginated_multi_choice,
     render_progress,
     validate_output_format,
+    write_download_metadata,
 )
 
 
@@ -249,6 +250,63 @@ class JellyfinMusicDownloaderTests(unittest.TestCase):
 
         self.assertEqual(result_destination, destination)
         self.assertEqual(status, "skipped")
+
+    def test_write_download_metadata_maps_jellyfin_fields_to_audio_tags(self) -> None:
+        item = AudioItem("55", "Song", "Album", "Artist", 2, 1, "/track.mp3")
+
+        class FakeAudio(dict):
+            def __init__(self) -> None:
+                super().__init__()
+                self.saved = False
+
+            def save(self) -> None:
+                self.saved = True
+
+        fake_audio = FakeAudio()
+
+        with tempfile.TemporaryDirectory() as temp_dir, patch(
+            "jellyfin_music_downloader._open_metadata_tags",
+            return_value=fake_audio,
+        ):
+            destination = Path(temp_dir) / "Song.mp3"
+            destination.write_bytes(b"audio")
+
+            write_download_metadata(destination, item)
+
+        self.assertEqual(fake_audio["title"], ["Song"])
+        self.assertEqual(fake_audio["album"], ["Album"])
+        self.assertEqual(fake_audio["artist"], ["Artist"])
+        self.assertEqual(fake_audio["tracknumber"], ["2"])
+        self.assertEqual(fake_audio["discnumber"], ["1"])
+        self.assertTrue(fake_audio.saved)
+
+    def test_download_one_applies_metadata_to_transcoded_downloads(self) -> None:
+        item = AudioItem("55", "Song", "Album", "Artist", 1, None, "/track.flac")
+        client = JellyfinClient("https://example.com", "username", "password", user_id="user-1")
+        client._access_token = "secret-token"
+
+        with tempfile.TemporaryDirectory() as temp_dir, patch(
+            "jellyfin_music_downloader.urllib.request.urlopen"
+        ) as mock_urlopen, patch("jellyfin_music_downloader.write_download_metadata") as mock_write_metadata:
+            mock_urlopen.return_value.__enter__.return_value = io.BytesIO(b"audio")
+
+            result_destination, status = download_one(
+                client=client,
+                item=item,
+                output_dir=Path(temp_dir),
+                output_format="mp3",
+                audio_codec="libmp3lame",
+                audio_bitrate=192000,
+                audio_sample_rate=44100,
+                overwrite=True,
+                dry_run=False,
+                timeout=5,
+            )
+
+            self.assertEqual(result_destination.read_bytes(), b"audio")
+            mock_write_metadata.assert_called_once_with(result_destination, item)
+
+        self.assertEqual(status, "downloaded")
 
     def test_download_items_reports_failures_without_aborting_all_work(self) -> None:
         item = AudioItem("55", "Song", "Album", "Artist", 1, None, "/track.mp3")
