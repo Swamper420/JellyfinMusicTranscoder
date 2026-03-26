@@ -405,7 +405,7 @@ def prompt_paginated_multi_choice(
             for text, value in choices
             if not filter_query or filter_query.casefold() in text.casefold()
         ]
-        total_pages = max(1, (len(filtered_choices) - 1) // page_size + 1) if filtered_choices else 1
+        total_pages = max(1, (len(filtered_choices) - 1) // page_size + 1)
         page_index = min(page_index, total_pages - 1)
         start = page_index * page_size
         end = min(start + page_size, len(filtered_choices))
@@ -484,7 +484,7 @@ def prompt_paginated_multi_choice(
                     start_index_token = int(start_token)
                     end_index_token = int(end_token)
                     if start_index_token > end_index_token:
-                        raise ValueError
+                        raise ValueError("Range start must be less than or equal to range end.")
                     indices.extend(range(start_index_token, end_index_token + 1))
                 else:
                     indices.append(int(token))
