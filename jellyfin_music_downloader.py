@@ -365,7 +365,7 @@ def prompt_paginated_multi_choice(
     choices: list[tuple[str, Any]],
     *,
     page_size: int = 10,
-    input_func: Any = None,
+    input_func: Callable[[str], str] | None = None,
 ) -> list[Any]:
     if input_func is None:
         input_func = input
@@ -436,6 +436,7 @@ def prompt_paginated_multi_choice(
             else:
                 selected_lookup.add(value)
                 selected_values.append(value)
+    return selected_values
 
 
 def _read_secret(prompt: str) -> str:
@@ -461,7 +462,10 @@ def build_selection_choices(items: Iterable[AudioItem], selection_mode: str) -> 
         artists = sorted({item.artist for item in items}, key=str.casefold)
         return [(artist, artist) for artist in artists]
     if selection_mode == "album":
-        albums = sorted({(item.artist, item.album) for item in items}, key=lambda value: (value[0].casefold(), value[1].casefold()))
+        albums = sorted(
+            {(item.artist, item.album) for item in items},
+            key=lambda value: (value[0].casefold(), value[1].casefold()),
+        )
         return [(f"{artist} / {album}", (artist, album)) for artist, album in albums]
     return []
 

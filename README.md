@@ -1,6 +1,6 @@
 # Jellyfin Music Downloader CLI
 
-This repository ships a standalone Python CLI that downloads audio visible to a Jellyfin user and can optionally ask Jellyfin to transcode files on the way down.
+This repository ships a standalone Python CLI that downloads audio items visible to a Jellyfin user and can optionally ask Jellyfin to transcode files on the way down.
 
 ## Features
 
