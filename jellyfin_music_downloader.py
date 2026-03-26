@@ -131,7 +131,7 @@ class JellyfinClient:
                 {
                     "Recursive": "true",
                     "IncludeItemTypes": "Audio",
-                    "Fields": "Path,Album,AlbumArtist,AlbumArtists,MediaSources,IndexNumber,ParentIndexNumber",
+                    "Fields": "Name,Path,Album,AlbumArtist,AlbumArtists,MediaSources,IndexNumber,ParentIndexNumber",
                     "StartIndex": str(start_index),
                     "Limit": str(page_size),
                 },
