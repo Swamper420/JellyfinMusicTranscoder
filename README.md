@@ -2,12 +2,19 @@
 
 This repository ships a standalone Python CLI that downloads audio items visible to a Jellyfin user and can optionally ask Jellyfin to transcode files on the way down.
 
+Install the small metadata dependency before running the downloader:
+
+```bash
+python3 -m pip install -r requirements.txt
+```
+
 ## Features
 
 - Run the script directly as-is with Python
 - Interactive terminal setup wizard when you launch it without arguments
 - Downloads all audio items from a Jellyfin server, or lets you choose artists or albums interactively
 - Uses Jellyfin server-side transcoding when you request a target format
+- Reapplies Jellyfin library metadata to transcoded downloads so title, artist, album, disc, and track tags are preserved
 - Supports any safe container name accepted by your Jellyfin/FFmpeg setup, such as `mp3`, `flac`, `opus`, `ogg`, `aac`, or `m4a`
 - Parallel downloads with a configurable number of simultaneous transfers
 - Preserves a simple `Artist/Album/Track` output layout
