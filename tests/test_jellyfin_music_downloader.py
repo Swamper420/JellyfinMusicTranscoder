@@ -9,10 +9,13 @@ from jellyfin_music_downloader import (
     AudioItem,
     JellyfinClient,
     build_output_path,
+    build_selection_choices,
     download_items,
     download_one,
+    filter_items_by_selection,
     format_progress_bar,
     parse_args,
+    prompt_paginated_multi_choice,
     render_progress,
     validate_output_format,
 )
@@ -111,6 +114,7 @@ class JellyfinMusicDownloaderTests(unittest.TestCase):
                 "/tmp/music",
                 "",
                 "",
+                "",
                 "8",
                 "45",
                 "y",
@@ -132,6 +136,7 @@ class JellyfinMusicDownloaderTests(unittest.TestCase):
         self.assertEqual(args.password, "secret-token")
         self.assertEqual(args.output_dir, Path("/tmp/music"))
         self.assertIsNone(args.user_id)
+        self.assertEqual(args.selection_mode, "all")
         self.assertEqual(args.format, "original")
         self.assertEqual(args.parallel, 8)
         self.assertEqual(args.timeout, 45)
@@ -144,6 +149,7 @@ class JellyfinMusicDownloaderTests(unittest.TestCase):
                 "https://example.com",
                 "demo-user",
                 "/tmp/music",
+                "",
                 "",
                 "",
                 "",
@@ -170,6 +176,54 @@ class JellyfinMusicDownloaderTests(unittest.TestCase):
         self.assertEqual(args.output_dir, Path("/tmp/music"))
         self.assertEqual(args.username, "demo-user")
         self.assertEqual(args.password, "secret-token")
+        self.assertEqual(args.selection_mode, "all")
+
+    def test_build_selection_choices_groups_unique_artists_and_albums(self) -> None:
+        items = [
+            AudioItem("1", "Song One", "Album A", "Artist B", 1, None, None),
+            AudioItem("2", "Song Two", "Album A", "Artist B", 2, None, None),
+            AudioItem("3", "Song Three", "Album A", "Artist A", 1, None, None),
+        ]
+
+        self.assertEqual(
+            build_selection_choices(items, "artist"),
+            [("Artist A", "Artist A"), ("Artist B", "Artist B")],
+        )
+        self.assertEqual(
+            build_selection_choices(items, "album"),
+            [("Artist A / Album A", ("Artist A", "Album A")), ("Artist B / Album A", ("Artist B", "Album A"))],
+        )
+
+    def test_filter_items_by_selection_supports_artist_and_album_modes(self) -> None:
+        items = [
+            AudioItem("1", "Song One", "Album A", "Artist A", 1, None, None),
+            AudioItem("2", "Song Two", "Album B", "Artist A", 2, None, None),
+            AudioItem("3", "Song Three", "Album A", "Artist B", 1, None, None),
+        ]
+
+        self.assertEqual(
+            [item.item_id for item in filter_items_by_selection(items, "artist", ["Artist A"])],
+            ["1", "2"],
+        )
+        self.assertEqual(
+            [item.item_id for item in filter_items_by_selection(items, "album", [("Artist B", "Album A")])],
+            ["3"],
+        )
+
+    def test_prompt_paginated_multi_choice_supports_space_separated_selection_across_pages(self) -> None:
+        responses = iter(["1 2", "n", "2", ""])
+
+        def fake_input(prompt: str) -> str:
+            return next(responses)
+
+        selected = prompt_paginated_multi_choice(
+            "Choose artists",
+            [("Artist A", "Artist A"), ("Artist B", "Artist B"), ("Artist C", "Artist C"), ("Artist D", "Artist D")],
+            page_size=2,
+            input_func=fake_input,
+        )
+
+        self.assertEqual(selected, ["Artist A", "Artist B", "Artist D"])
 
     def test_download_one_skips_existing_files_without_overwrite(self) -> None:
         item = AudioItem("55", "Song", "Album", "Artist", 1, None, "/track.mp3")
