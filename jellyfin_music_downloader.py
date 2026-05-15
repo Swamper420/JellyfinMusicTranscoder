@@ -172,13 +172,9 @@ class JellyfinClient:
         save_config(config)
 
 
-    def iter_audio_items(
-        self,
-        progress: Progress,
-        task_id: TaskID,
-    ) -> Iterable[AudioItem]:
+    def iter_artists(self, progress: Progress, task_id: TaskID) -> Iterable[tuple[str, str]]:
         start_index = 0
-        page_size = 200
+        page_size = 2000
         total = None
         progress.update(task_id, completed=0, total=0)
 
@@ -187,12 +183,82 @@ class JellyfinClient:
                 f"/Users/{self.user_id}/Items",
                 {
                     "Recursive": "true",
-                    "IncludeItemTypes": "Audio",
-                    "Fields": "Name,Path,Album,AlbumArtist,AlbumArtists,MediaSources,IndexNumber,ParentIndexNumber",
+                    "IncludeItemTypes": "MusicArtist",
                     "StartIndex": str(start_index),
                     "Limit": str(page_size),
+                    "SortBy": "SortName",
                 },
             )
+
+            items = response.get("Items") or []
+            total = int(response.get("TotalRecordCount", len(items)))
+            progress.update(task_id, completed=start_index + len(items), total=total)
+            if not items:
+                break
+
+            for item in items:
+                yield (str(item["Id"]), str(item.get("Name") or "Unknown Artist"))
+
+            start_index += len(items)
+
+    def iter_albums(self, progress: Progress, task_id: TaskID) -> Iterable[tuple[str, str, str]]:
+        start_index = 0
+        page_size = 2000
+        total = None
+        progress.update(task_id, completed=0, total=0)
+
+        while total is None or start_index < total:
+            response = self._request_json(
+                f"/Users/{self.user_id}/Items",
+                {
+                    "Recursive": "true",
+                    "IncludeItemTypes": "MusicAlbum",
+                    "StartIndex": str(start_index),
+                    "Limit": str(page_size),
+                    "SortBy": "SortName",
+                },
+            )
+
+            items = response.get("Items") or []
+            total = int(response.get("TotalRecordCount", len(items)))
+            progress.update(task_id, completed=start_index + len(items), total=total)
+            if not items:
+                break
+
+            for item in items:
+                album_artists = item.get("AlbumArtists") or []
+                artist_name = item.get("AlbumArtist") or (album_artists[0] if album_artists else "Unknown Artist")
+                yield (str(item["Id"]), str(item.get("Name") or "Unknown Album"), str(artist_name))
+
+            start_index += len(items)
+
+    def iter_audio_items(
+        self,
+        progress: Progress,
+        task_id: TaskID,
+        artist_ids: list[str] | None = None,
+        album_ids: list[str] | None = None,
+    ) -> Iterable[AudioItem]:
+        start_index = 0
+        page_size = 2000
+        total = None
+        progress.update(task_id, completed=0, total=0)
+
+        params: dict[str, str] = {
+            "Recursive": "true",
+            "IncludeItemTypes": "Audio",
+            "Fields": "Name,Path,Album,AlbumArtist,AlbumArtists,MediaSources,IndexNumber,ParentIndexNumber",
+            "StartIndex": str(start_index),
+            "Limit": str(page_size),
+        }
+        if artist_ids:
+            params["ArtistIds"] = ",".join(artist_ids)
+        if album_ids:
+            params["AlbumIds"] = ",".join(album_ids)
+
+        while total is None or start_index < total:
+            params["StartIndex"] = str(start_index)
+            response = self._request_json(f"/Users/{self.user_id}/Items", params)
 
             items = response.get("Items") or []
             total = int(response.get("TotalRecordCount", len(items)))
@@ -320,28 +386,7 @@ def should_use_interactive_ui(argv: list[str] | None) -> bool:
     return len(argv) == 0 and supports_interactive_ui()
 
 
-def build_selection_choices(items: Iterable[AudioItem], selection_mode: str) -> list[questionary.Choice]:
-    if selection_mode == "artist":
-        artists = sorted({item.artist for item in items}, key=str.casefold)
-        return [questionary.Choice(artist, artist) for artist in artists]
-    if selection_mode == "album":
-        albums = sorted(
-            {(item.artist, item.album) for item in items},
-            key=lambda value: (value[0].casefold(), value[1].casefold()),
-        )
-        return [questionary.Choice(f"{artist} / {album}", (artist, album)) for artist, album in albums]
-    return []
 
-
-def filter_items_by_selection(items: Iterable[AudioItem], selection_mode: str, selected_values: Iterable[Any]) -> list[AudioItem]:
-    item_list = list(items)
-    if selection_mode == "artist":
-        selected_artists = set(selected_values)
-        return [item for item in item_list if item.artist in selected_artists]
-    if selection_mode == "album":
-        selected_albums = set(selected_values)
-        return [item for item in item_list if (item.artist, item.album) in selected_albums]
-    return item_list
 
 
 def prompt_for_missing_args(args: argparse.Namespace) -> argparse.Namespace:
@@ -753,7 +798,17 @@ def main(argv: list[str] | None = None) -> int:
         )
         with progress:
             task_id = progress.add_task("Discovering...", total=None)
-            items = list(client.iter_audio_items(progress, task_id))
+            
+            if args.selection_mode == "artist":
+                progress.update(task_id, description="Discovering artists...")
+                artists = list(client.iter_artists(progress, task_id))
+            elif args.selection_mode == "album":
+                progress.update(task_id, description="Discovering albums...")
+                albums = list(client.iter_albums(progress, task_id))
+            else:
+                progress.update(task_id, description="Discovering audio items...")
+                items = list(client.iter_audio_items(progress, task_id))
+                
     except KeyboardInterrupt:
         console.print("\n[red]Discovery cancelled.[/red]")
         return 1
@@ -761,34 +816,60 @@ def main(argv: list[str] | None = None) -> int:
         console.print(f"\n[red]Failed to discover items: {e}[/red]")
         return 1
 
-    if not items:
-        console.print("[yellow]No audio items were found.[/yellow]")
-        return 1
-
-    if args.selection_mode in {"artist", "album"}:
-        if not supports_interactive_ui():
-            console.print(
-                f"[red]--selection-mode {args.selection_mode} requires an interactive terminal so you can make selections.[/red]"
-            )
+    if args.selection_mode == "artist":
+        if not artists:
+            console.print("[yellow]No artists were found.[/yellow]")
             return 1
-        selection_choices = build_selection_choices(items, args.selection_mode)
+        
+        selection_choices = [questionary.Choice(name, item_id) for item_id, name in artists]
         try:
-            selected_values = questionary.checkbox(
-                f"Choose {args.selection_mode}s to download:",
+            selected_ids = questionary.checkbox(
+                "Choose artists to download:",
                 choices=selection_choices,
                 instruction="(Use arrows to move, <space> to select, <a> to toggle, <i> to invert, <enter> to confirm)",
             ).ask()
         except KeyboardInterrupt:
             console.print("\n[red]Selection cancelled.[/red]")
             return 1
-
-        if not selected_values:
+            
+        if not selected_ids:
             console.print("[yellow]No items selected. Exiting.[/yellow]")
             return 0
-
-        items = filter_items_by_selection(items, args.selection_mode, selected_values)
-        if not items:
-            console.print("[yellow]No audio items matched the selected filters.[/yellow]")
+            
+        try:
+            with progress:
+                task_id = progress.add_task("Discovering selected audio items...", total=None)
+                items = list(client.iter_audio_items(progress, task_id, artist_ids=selected_ids))
+        except Exception as e:
+            console.print(f"\n[red]Failed to fetch selected items: {e}[/red]")
+            return 1
+            
+    elif args.selection_mode == "album":
+        if not albums:
+            console.print("[yellow]No albums were found.[/yellow]")
+            return 1
+            
+        selection_choices = [questionary.Choice(f"{artist_name} / {name}", item_id) for item_id, name, artist_name in albums]
+        try:
+            selected_ids = questionary.checkbox(
+                "Choose albums to download:",
+                choices=selection_choices,
+                instruction="(Use arrows to move, <space> to select, <a> to toggle, <i> to invert, <enter> to confirm)",
+            ).ask()
+        except KeyboardInterrupt:
+            console.print("\n[red]Selection cancelled.[/red]")
+            return 1
+            
+        if not selected_ids:
+            console.print("[yellow]No items selected. Exiting.[/yellow]")
+            return 0
+            
+        try:
+            with progress:
+                task_id = progress.add_task("Discovering selected audio items...", total=None)
+                items = list(client.iter_audio_items(progress, task_id, album_ids=selected_ids))
+        except Exception as e:
+            console.print(f"\n[red]Failed to fetch selected items: {e}[/red]")
             return 1
 
     console.print(
