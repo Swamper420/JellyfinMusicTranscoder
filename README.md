@@ -2,7 +2,7 @@
 
 This repository ships a standalone Python CLI that downloads audio items visible to a Jellyfin user and can optionally ask Jellyfin to transcode files on the way down.
 
-Install the small metadata dependency before running the downloader:
+Install the dependencies before running the downloader:
 
 ```bash
 python3 -m pip install -r requirements.txt
@@ -10,14 +10,15 @@ python3 -m pip install -r requirements.txt
 
 ## Features
 
-- Run the script directly as-is with Python
-- Interactive terminal setup wizard when you launch it without arguments
-- Downloads all audio items from a Jellyfin server, or lets you choose artists or albums interactively
-- Uses Jellyfin server-side transcoding when you request a target format
-- Reapplies Jellyfin library metadata to transcoded downloads so title, artist, album, disc, and track tags are preserved
-- Supports any safe container name accepted by your Jellyfin/FFmpeg setup, such as `mp3`, `flac`, `opus`, `ogg`, `aac`, or `m4a`
-- Parallel downloads with a configurable number of simultaneous transfers
-- Preserves a simple `Artist/Album/Track` output layout
+- **Blazing Fast Discovery**: Fetch metadata efficiently using chunking. It directly grabs specific artist or album libraries on demand, bypassing the need to index your entire server at once!
+- **State-of-the-Art TUI**: Fully interactive Terminal UI powered by `rich` and `questionary`. Provides an elegant setup wizard, pagination, type-to-search checkboxes, and beautiful download progress bars.
+- **Credential Persistence**: Safely caches your Jellyfin authentication tokens and download configurations. It won't ask for your password repeatedly.
+- Downloads all audio items from a Jellyfin server, or lets you choose artists or albums interactively.
+- Uses Jellyfin server-side transcoding when you request a target format.
+- Reapplies Jellyfin library metadata to transcoded downloads so title, artist, album, disc, and track tags are preserved.
+- Supports any safe container name accepted by your Jellyfin/FFmpeg setup, such as `mp3`, `flac`, `opus`, `ogg`, `aac`, or `m4a`.
+- Parallel downloads with a configurable number of simultaneous transfers.
+- Preserves a simple `Artist/Album/Track` output layout.
 
 ## Usage
 
@@ -35,33 +36,26 @@ You can also launch the wizard explicitly:
 python3 jellyfin_music_downloader.py --interactive
 ```
 
-The wizard walks through the connection and download settings in a terminal UI similar to:
+The wizard walks through the connection and download settings in a beautiful terminal UI.
 
-```text
-=============================================
-🎵 Jellyfin Music Downloader Setup Wizard 🎵
-=============================================
+When you choose **Choose by artist** or **Choose by album**, the CLI pulls up an interactive menu where you can scroll with your arrow keys, search by typing, and toggle your selections using `Space`. Press `Enter` to confirm the current selection.
 
---- Output Format ---
-[1] * Original (No Transcoding)
-[2]   MP3
-[3]   FLAC (Lossless)
-[4]   AAC
-[5]   OPUS
-[6]   OGG
+### Managing Credentials
 
-=============================================
+The script persists your token automatically. If you need to log out, switch users, or clear your saved settings, simply use the clear flag:
+
+```bash
+python3 jellyfin_music_downloader.py --clear-config
 ```
 
-When you choose `Choose by artist` or `Choose by album`, the CLI shows paged lists and lets you toggle selections by entering space-separated numbers. Arrow keys still work for navigation when your terminal reports them correctly, and you can use `W/S`, `D`, and uppercase `A` as a fallback. Lowercase `a` still selects all shown items, while `n` and `p` also move between pages. Press Enter to confirm the current selection.
+### Unattended Use
 
-Run directly with flags:
+Run directly with flags (the script automatically uses your saved token if you have logged in previously!):
 
 ```bash
 python3 jellyfin_music_downloader.py \
   --server-url https://jellyfin.example.com \
   --username YOUR_USERNAME \
-  --password YOUR_PASSWORD \
   --output-dir ./music \
   --parallel 6
 ```
@@ -72,7 +66,6 @@ Download using Jellyfin transcoding:
 python3 jellyfin_music_downloader.py \
   --server-url https://jellyfin.example.com \
   --username YOUR_USERNAME \
-  --password YOUR_PASSWORD \
   --output-dir ./music-opus \
   --format opus \
   --audio-codec libopus \
@@ -86,6 +79,7 @@ Useful options include:
 - `--overwrite` to replace files instead of skipping existing downloads
 - `--dry-run` to preview what would be downloaded
 - `--parallel` to tune concurrent downloads
-- `--selection-mode artist` or `--selection-mode album` to launch the interactive selector after the library is loaded
+- `--selection-mode artist` or `--selection-mode album` to launch the interactive selector
+- `--clear-config` to log out and remove stored paths
 
 Run `python3 jellyfin_music_downloader.py --help` for the full option list.
