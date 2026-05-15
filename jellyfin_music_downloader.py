@@ -68,10 +68,15 @@ class AudioItem:
     item_id: str
     name: str
     album: str
-    artist: str
+    artist: str  # This was used as album artist, keeping for compat but adding more specific ones
+    track_artist: str
+    album_artist: str
+    year: int | None
+    genres: list[str]
     index_number: int | None
     parent_index_number: int | None
     source_path: str | None
+    image_tag: str | None
 
     @classmethod
     def from_api(cls, payload: dict[str, Any]) -> "AudioItem":
@@ -80,16 +85,30 @@ class AudioItem:
         source_path = payload.get("Path")
         if not source_path and media_sources:
             source_path = media_sources[0].get("Path")
-        album_artist = payload.get("AlbumArtist") or (album_artists[0] if album_artists else None)
+        
+        # Primary track artist(s)
+        track_artists = payload.get("Artists") or []
+        track_artist = ", ".join(track_artists) if track_artists else (payload.get("Artist") or "Unknown Artist")
+        
+        # Album artist
+        album_artist = payload.get("AlbumArtist") or (album_artists[0] if album_artists else track_artist)
+
+        image_tags = payload.get("ImageTags") or {}
+        image_tag = image_tags.get("Primary")
 
         return cls(
             item_id=str(payload["Id"]),
             name=str(payload.get("Name") or payload["Id"]),
             album=str(payload.get("Album") or "Unknown Album"),
-            artist=str(album_artist or "Unknown Artist"),
+            artist=str(album_artist),
+            track_artist=str(track_artist),
+            album_artist=str(album_artist),
+            year=_maybe_int(payload.get("ProductionYear")),
+            genres=payload.get("Genres") or [],
             index_number=_maybe_int(payload.get("IndexNumber")),
             parent_index_number=_maybe_int(payload.get("ParentIndexNumber")),
             source_path=source_path,
+            image_tag=image_tag,
         )
 
 
@@ -247,7 +266,7 @@ class JellyfinClient:
         params: dict[str, str] = {
             "Recursive": "true",
             "IncludeItemTypes": "Audio",
-            "Fields": "Name,Path,Album,AlbumArtist,AlbumArtists,MediaSources,IndexNumber,ParentIndexNumber",
+            "Fields": "Name,Path,Album,AlbumArtist,AlbumArtists,Artists,MediaSources,IndexNumber,ParentIndexNumber,ProductionYear,Genres,ImageTags",
             "StartIndex": str(start_index),
             "Limit": str(page_size),
         }
@@ -299,6 +318,15 @@ class JellyfinClient:
             params["AudioSampleRate"] = str(audio_sample_rate)
 
         return self._build_url(f"/Audio/{item.item_id}/stream.{output_format}", params)
+
+    def get_item_image(self, item_id: str, max_width: int = 1000) -> bytes | None:
+        url = self._build_url(f"/Items/{item_id}/Images/Primary", {"maxWidth": str(max_width)})
+        request = urllib.request.Request(url, headers={"X-Emby-Token": self.access_token})
+        try:
+            with urllib.request.urlopen(request, timeout=self.timeout) as response:
+                return response.read()
+        except Exception:
+            return None
 
     def _request_json(self, path: str, params: dict[str, str] | None = None) -> dict[str, Any]:
         url = self._build_url(path, params)
@@ -603,20 +631,20 @@ def download_items(
 
 def _open_metadata_tags(destination: Path) -> Any | None:
     try:
-        from mutagen.easymp4 import EasyMP4
         from mutagen.flac import FLAC
-        from mutagen.mp3 import EasyMP3
+        from mutagen.mp3 import MP3
+        from mutagen.mp4 import MP4
         from mutagen.oggopus import OggOpus
         from mutagen.oggvorbis import OggVorbis
     except ImportError as error:
         raise RuntimeError(
-            "Metadata passthrough for transcoded downloads requires the optional 'mutagen' dependency. "
-            "Install requirements.txt before downloading transcoded files."
+            "Metadata passthrough requires the 'mutagen' dependency. "
+            "Install requirements.txt before downloading."
         ) from error
 
     extension = destination.suffix.lower()
     if extension == ".mp3":
-        return EasyMP3(destination)
+        return MP3(destination)
     if extension == ".flac":
         return FLAC(destination)
     if extension in {".ogg", ".oga"}:
@@ -624,23 +652,116 @@ def _open_metadata_tags(destination: Path) -> Any | None:
     if extension == ".opus":
         return OggOpus(destination)
     if extension in {".m4a", ".mp4"}:
-        return EasyMP4(destination)
+        return MP4(destination)
     return None
 
 
-def write_download_metadata(destination: Path, item: AudioItem) -> None:
+def write_download_metadata(destination: Path, item: AudioItem, image_data: bytes | None = None) -> None:
     audio = _open_metadata_tags(destination)
     if audio is None:
         return
 
-    audio["title"] = [item.name]
-    audio["album"] = [item.album]
-    audio["artist"] = [item.artist]
-    if item.index_number is not None:
-        audio["tracknumber"] = [str(item.index_number)]
-    if item.parent_index_number is not None:
-        audio["discnumber"] = [str(item.parent_index_number)]
-    audio.save()
+    from mutagen.id3 import ID3, APIC, TIT2, TALB, TPE1, TPE2, TDRC, TCON, TRCK, TPOS
+    from mutagen.mp4 import MP4Cover
+    from mutagen.flac import Picture
+    import base64
+
+    extension = destination.suffix.lower()
+
+    if extension == ".mp3":
+        if audio.tags is None:
+            audio.add_tags()
+        
+        tags = audio.tags
+        tags.add(TIT2(encoding=3, text=item.name))
+        tags.add(TALB(encoding=3, text=item.album))
+        tags.add(TPE1(encoding=3, text=item.track_artist))
+        tags.add(TPE2(encoding=3, text=item.album_artist))
+        if item.year:
+            tags.add(TDRC(encoding=3, text=str(item.year)))
+        if item.genres:
+            tags.add(TCON(encoding=3, text=", ".join(item.genres)))
+        if item.index_number is not None:
+            tags.add(TRCK(encoding=3, text=str(item.index_number)))
+        if item.parent_index_number is not None:
+            tags.add(TPOS(encoding=3, text=str(item.parent_index_number)))
+        
+        if image_data:
+            tags.add(APIC(
+                encoding=3,
+                mime='image/jpeg',
+                type=3,
+                desc='Cover',
+                data=image_data
+            ))
+        audio.save()
+
+    elif extension == ".flac":
+        audio["title"] = item.name
+        audio["album"] = item.album
+        audio["artist"] = item.track_artist
+        audio["albumartist"] = item.album_artist
+        if item.year:
+            audio["date"] = str(item.year)
+        if item.genres:
+            audio["genre"] = item.genres
+        if item.index_number is not None:
+            audio["tracknumber"] = str(item.index_number)
+        if item.parent_index_number is not None:
+            audio["discnumber"] = str(item.parent_index_number)
+        
+        if image_data:
+            picture = Picture()
+            picture.type = 3
+            picture.mime = "image/jpeg"
+            picture.desc = "front cover"
+            picture.data = image_data
+            audio.add_picture(picture)
+        audio.save()
+
+    elif extension in {".m4a", ".mp4"}:
+        # MP4 tags use different keys
+        audio["\xa9nam"] = item.name
+        audio["\xa9alb"] = item.album
+        audio["\xa9ART"] = item.track_artist
+        audio["aART"] = item.album_artist
+        if item.year:
+            audio["\xa9day"] = str(item.year)
+        if item.genres:
+            audio["\xa9gen"] = ", ".join(item.genres)
+        if item.index_number is not None:
+            audio["trkn"] = [(item.index_number, 0)]
+        if item.parent_index_number is not None:
+            audio["disk"] = [(item.parent_index_number, 0)]
+        
+        if image_data:
+            audio["covr"] = [MP4Cover(image_data, imageformat=MP4Cover.FORMAT_JPEG)]
+        audio.save()
+
+    elif extension in {".ogg", ".oga", ".opus"}:
+        audio["title"] = item.name
+        audio["album"] = item.album
+        audio["artist"] = item.track_artist
+        audio["albumartist"] = item.album_artist
+        if item.year:
+            audio["date"] = str(item.year)
+        if item.genres:
+            audio["genre"] = item.genres
+        if item.index_number is not None:
+            audio["tracknumber"] = str(item.index_number)
+        if item.parent_index_number is not None:
+            audio["discnumber"] = str(item.parent_index_number)
+
+        if image_data:
+            picture = Picture()
+            picture.type = 3
+            picture.mime = "image/jpeg"
+            picture.desc = "front cover"
+            picture.data = image_data
+            picture_data = picture.write()
+            encoded_data = base64.b64encode(picture_data).decode("ascii")
+            audio["metadata_block_picture"] = [encoded_data]
+        audio.save()
 
 
 def download_one(
@@ -677,8 +798,12 @@ def download_one(
     with urllib.request.urlopen(request, timeout=timeout) as response, destination.open("wb") as output_handle:
         shutil.copyfileobj(response, output_handle)
 
-    if output_format != "original":
-        write_download_metadata(destination, item)
+    # Fetch image for metadata if it exists
+    image_data = None
+    if item.image_tag:
+        image_data = client.get_item_image(item.item_id)
+
+    write_download_metadata(destination, item, image_data=image_data)
 
     return destination, "downloaded"
 
@@ -769,6 +894,78 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     return validate_args(parser, args)
 
 
+def prompt_multi_select(
+    title: str,
+    choices: list[questionary.Choice],
+    instruction: str = "(Use arrows to move, <space> to select, <a> to toggle, <i> to invert, <enter> to confirm)"
+) -> list[str]:
+    current_filter = ""
+    selected_ids: set[str] = set()
+
+    while True:
+        # Prepare choices: those already selected + those matching filter
+        filtered_choices = []
+        for c in choices:
+            # Always show selected items at the top? Or just keep them in the list.
+            # Let's just filter based on name, but keep selected items selected.
+            is_selected = c.value in selected_ids
+            if not current_filter or current_filter.lower() in c.title.lower() or is_selected:
+                # Update the choice checked state
+                c.checked = is_selected
+                filtered_choices.append(c)
+
+        # Add special items for searching
+        display_choices = [
+            questionary.Choice(f"🔍 [Filter: {current_filter or 'None'}]", "___filter___"),
+        ] + filtered_choices
+
+        result = questionary.checkbox(
+            f"{title} (Selected: {len(selected_ids)})",
+            choices=display_choices,
+            instruction=f"{instruction}\nSelect 'Filter' to change search term.",
+        ).ask()
+
+        if result is None:
+            raise KeyboardInterrupt
+
+        # Check if filter was selected (it's at the top)
+        if "___filter___" in result:
+            # We need to preserve current selections
+            # The result from checkbox only contains the values of items that are CURRENTLY checked in the display
+            # But we want to maintain the state of items that might be hidden by the filter.
+            # So we update our global set of selected_ids.
+            
+            # Update selected_ids from current view
+            visible_ids = {c.value for c in filtered_choices}
+            current_selections = set(result) - {"___filter___"}
+            
+            # Items that were visible and NOT selected should be removed from selected_ids
+            # Items that were visible and SELECTED should be added to selected_ids
+            for vid in visible_ids:
+                if vid in current_selections:
+                    selected_ids.add(vid)
+                else:
+                    selected_ids.discard(vid)
+
+            new_filter = questionary.text("Enter search term:", default=current_filter).ask()
+            if new_filter is not None:
+                current_filter = new_filter
+            continue
+        else:
+            # User pressed enter without checking the filter item
+            # Final selection
+            # We still need to merge the current view with the global state
+            visible_ids = {c.value for c in filtered_choices}
+            current_selections = set(result)
+            for vid in visible_ids:
+                if vid in current_selections:
+                    selected_ids.add(vid)
+                else:
+                    selected_ids.discard(vid)
+            
+            return list(selected_ids)
+
+
 def main(argv: list[str] | None = None) -> int:
     try:
         args = parse_args(argv)
@@ -823,11 +1020,7 @@ def main(argv: list[str] | None = None) -> int:
         
         selection_choices = [questionary.Choice(name, item_id) for item_id, name in artists]
         try:
-            selected_ids = questionary.checkbox(
-                "Choose artists to download:",
-                choices=selection_choices,
-                instruction="(Use arrows to move, <space> to select, <a> to toggle, <i> to invert, <enter> to confirm)",
-            ).ask()
+            selected_ids = prompt_multi_select("Choose artists to download:", choices=selection_choices)
         except KeyboardInterrupt:
             console.print("\n[red]Selection cancelled.[/red]")
             return 1
@@ -851,11 +1044,7 @@ def main(argv: list[str] | None = None) -> int:
             
         selection_choices = [questionary.Choice(f"{artist_name} / {name}", item_id) for item_id, name, artist_name in albums]
         try:
-            selected_ids = questionary.checkbox(
-                "Choose albums to download:",
-                choices=selection_choices,
-                instruction="(Use arrows to move, <space> to select, <a> to toggle, <i> to invert, <enter> to confirm)",
-            ).ask()
+            selected_ids = prompt_multi_select("Choose albums to download:", choices=selection_choices)
         except KeyboardInterrupt:
             console.print("\n[red]Selection cancelled.[/red]")
             return 1
